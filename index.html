@@ -4,17 +4,212 @@
     <meta charset="utf-8" />
     <title>Tomorrowland Entrance – 360° WebXR (Quest 3)</title>
 
+    <!-- A-Frame core -->
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+    <!-- Locomotion / gamepad helpers -->
     <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.4.0/dist/aframe-extras.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/dist/aframe-teleport-controls.min.js"></script>
 
     <style>
-      body { margin: 0; overflow: hidden; background: #000; }
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+      }
     </style>
 
     <script>
-      /* --- [SHADERS AND COMPONENTS FROM ORIGINAL CODE REMOVED FOR BREVITY BUT SHOULD REMAIN HERE] --- */
-      // (Keep your psychedelic-canopy, float-yoyo, and planar-mirror here)
+      /* Psychedelic LED canopy shader – used only on ceiling geometry */
+      AFRAME.registerShader("psychedelic-canopy", {
+        schema: {
+          timeMsec: { type: "time", is: "uniform" },
+        },
+        vertexShader: [
+          "varying vec2 vUv;",
+          "void main() {",
+          "  vUv = uv;",
+          "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+          "}",
+        ].join("\n"),
+        fragmentShader: [
+          "uniform float timeMsec;",
+          "varying vec2 vUv;",
+          "void main() {",
+          "  float t = timeMsec * 0.00025;",
+          "  vec2 p = vUv * 4.0;",
+          "  float angle = sin(p.y + t) * 1.5 + cos(p.x * 1.2 - t * 0.7);",
+          "  float radius = length(p - 2.0);",
+          "  float swirl = sin(radius * 4.0 - t * 3.0 + angle);",
+          "  float bands = sin((p.x + swirl) * 3.0 + t * 2.0);",
+          "  float bands2 = cos((p.y - swirl) * 2.5 - t * 1.7);",
+          "  vec3 base = vec3(0.1, 0.0, 0.15);",
+          "  vec3 neon1 = vec3(0.2, 0.8, 1.0);",
+          "  vec3 neon2 = vec3(1.0, 0.1, 0.7);",
+          "  vec3 neon3 = vec3(0.1, 1.0, 0.4);",
+          "  float m1 = smoothstep(0.0, 1.0, 0.5 + 0.5 * bands);",
+          "  float m2 = smoothstep(0.0, 1.0, 0.5 + 0.5 * bands2);",
+          "  vec3 color = base + m1 * neon1 + m2 * neon2 + (1.0 - abs(swirl)) * 0.4 * neon3;",
+          "  color *= 1.4;",
+          "  gl_FragColor = vec4(color, 1.0);",
+          "}",
+        ].join("\n"),
+      });
+
+      /* Gentle yoyo float for signs / labels */
+      AFRAME.registerComponent("float-yoyo", {
+        schema: {
+          amplitude: { type: "number", default: 0.25 },
+          speed: { type: "number", default: 1.0 },
+        },
+        init: function () {
+          this.startY = this.el.object3D.position.y;
+          this.t = 0;
+        },
+        tick: function (time, dt) {
+          this.t += dt / 1000;
+          this.el.object3D.position.y =
+            this.startY +
+            Math.sin(this.t * this.data.speed) * this.data.amplitude;
+        },
+      });
+
+      /* Planar mirror component – real-time reflective photobooth mirror */
+      AFRAME.registerComponent("planar-mirror", {
+        schema: {
+          resolution: { type: "int", default: 512 },
+          intervalMs: { type: "int", default: 33 }, // ~30 FPS
+        },
+
+        init: function () {
+          this._mirrorPos = new THREE.Vector3();
+          this._camPos = new THREE.Vector3();
+          this._normal = new THREE.Vector3();
+          this._q = new THREE.Quaternion();
+          this._camQ = new THREE.Quaternion();
+          this._camDir = new THREE.Vector3();
+          this._camUp = new THREE.Vector3();
+          this._reflPos = new THREE.Vector3();
+          this._reflDir = new THREE.Vector3();
+          this._reflUp = new THREE.Vector3();
+          this._lookAt = new THREE.Vector3();
+
+          this.reflectCam = new THREE.PerspectiveCamera();
+          this.mesh = null;
+          this.rt = null;
+
+          this.tick = AFRAME.utils.throttleTick(
+            this.tick,
+            this.data.intervalMs,
+            this
+          );
+
+          const trySetup = () => {
+            const mesh = this.el.getObject3D("mesh");
+            if (!mesh) return;
+
+            this.mesh = mesh;
+            this.rt = new THREE.WebGLRenderTarget(
+              this.data.resolution,
+              this.data.resolution,
+              {
+                minFilter: THREE.LinearFilter,
+                magFilter: THREE.LinearFilter,
+                format: THREE.RGBAFormat,
+                depthBuffer: true,
+                stencilBuffer: false,
+              }
+            );
+
+            this.rt.texture.wrapS = THREE.RepeatWrapping;
+            this.rt.texture.repeat.x = -1; // horizontal flip
+
+            this.mesh.material = new THREE.MeshStandardMaterial({
+              color: 0xffffff,
+              metalness: 1.0,
+              roughness: 0.03,
+              map: this.rt.texture,
+              emissive: new THREE.Color(0x111122),
+              emissiveIntensity: 0.25,
+            });
+          };
+
+          this.el.addEventListener("object3dset", (e) => {
+            if (e.detail.type === "mesh") trySetup();
+          });
+
+          if (this.el.getObject3D("mesh")) trySetup();
+        },
+
+        tick: function () {
+          if (!this.mesh || !this.rt) return;
+
+          const sceneEl = this.el.sceneEl;
+          const renderer = sceneEl && sceneEl.renderer;
+          const threeScene = sceneEl && sceneEl.object3D;
+          let mainCam = sceneEl && sceneEl.camera;
+          if (!renderer || !threeScene || !mainCam) return;
+
+          if (mainCam.isArrayCamera && mainCam.cameras && mainCam.cameras.length) {
+            mainCam = mainCam.cameras[0];
+          }
+
+          this.el.object3D.getWorldPosition(this._mirrorPos);
+          this.el.object3D.getWorldQuaternion(this._q);
+          this._normal.set(0, 0, 1).applyQuaternion(this._q).normalize();
+
+          mainCam.getWorldPosition(this._camPos);
+          mainCam.getWorldQuaternion(this._camQ);
+
+          this._camDir.set(0, 0, -1).applyQuaternion(this._camQ).normalize();
+          this._camUp.set(0, 1, 0).applyQuaternion(this._camQ).normalize();
+
+          const toCam = this._camPos.clone().sub(this._mirrorPos);
+          const dist = toCam.dot(this._normal);
+          this._reflPos
+            .copy(this._camPos)
+            .sub(this._normal.clone().multiplyScalar(2 * dist));
+
+          this._reflDir
+            .copy(this._camDir)
+            .sub(
+              this._normal
+                .clone()
+                .multiplyScalar(2 * this._camDir.dot(this._normal))
+            );
+          this._reflUp
+            .copy(this._camUp)
+            .sub(
+              this._normal
+                .clone()
+                .multiplyScalar(2 * this._camUp.dot(this._normal))
+            );
+
+          this.reflectCam.fov = mainCam.fov || 60;
+          this.reflectCam.near = mainCam.near || 0.05;
+          this.reflectCam.far = mainCam.far || 2000;
+          this.reflectCam.aspect = 1;
+
+          this.reflectCam.position.copy(this._reflPos);
+          this.reflectCam.up.copy(this._reflUp);
+          this._lookAt.copy(this._reflPos).add(this._reflDir);
+          this.reflectCam.lookAt(this._lookAt);
+          this.reflectCam.updateProjectionMatrix();
+
+          const prevRT = renderer.getRenderTarget();
+          const prevXr = renderer.xr.enabled;
+
+          this.mesh.visible = false;
+          renderer.xr.enabled = false;
+
+          renderer.setRenderTarget(this.rt);
+          renderer.clear();
+          renderer.render(threeScene, this.reflectCam);
+
+          renderer.setRenderTarget(prevRT);
+          renderer.xr.enabled = prevXr;
+          this.mesh.visible = true;
+        },
+      });
     </script>
   </head>
 
@@ -23,35 +218,83 @@
       renderer="antialias: true; physicallyCorrectLights: true; colorManagement: true"
       background="color: #070816"
       fog="type: exponential; color: #0b0a1c; density: 0.012"
-      xr-mode-ui="enabled: true"
+      vr-mode-ui="enabled: true"
     >
-      
-      <a-assets>
-        <a-mixin id="teleport" teleport-controls="cameraRig: #rig; teleportOrigin: #camera; button: trigger; curveShootingSpeed: 18; landingMaxAngle: 60"></a-mixin>
-      </a-assets>
-
+      <!-- Sky + global ambient / directional lighting to create depth -->
       <a-sky color="#0a0b22"></a-sky>
 
-      <a-entity light="type: ambient; intensity: 0.55; color: #9aa8ff"></a-entity>
-      <a-entity light="type: directional; intensity: 0.6; color: #cfd6ff" position="2 8 4"></a-entity>
+      <a-entity
+        light="type: ambient; intensity: 0.55; color: #9aa8ff"
+      ></a-entity>
+      <a-entity
+        light="type: directional; intensity: 0.6; color: #cfd6ff"
+        position="2 8 4"
+      ></a-entity>
+      <a-entity
+        light="type: directional; intensity: 0.35; color: #ff7bda"
+        position="-4 6 -8"
+      ></a-entity>
 
-      <a-entity 
-        id="rig" 
-        movement-controls="controls: checkpoint, gamepad, keyboard, touch; speed: 0.3" 
-        position="0 0 0">
-        
-        <a-entity id="camera" camera position="0 1.6 0" look-controls="pointerLockEnabled: false"></a-entity>
-
-        <a-entity id="leftHand" laser-controls="hand: left" mixin="teleport"></a-entity>
-        <a-entity id="rightHand" laser-controls="hand: right" mixin="teleport"></a-entity>
-
-        <a-entity hand-tracking-controls="hand: left" teleport-controls="cameraRig: #rig; teleportOrigin: #camera; inputEvents: pinchstarted"></a-entity>
-        <a-entity hand-tracking-controls="hand: right" teleport-controls="cameraRig: #rig; teleportOrigin: #camera; inputEvents: pinchstarted"></a-entity>
-      </a-entity>
+      <!-- Stylized depth walls -->
+      <a-box
+        position="-13 3 -30"
+        width="1"
+        height="8"
+        depth="80"
+        material="color: #060616; metalness: 0.2; roughness: 0.9"
+      ></a-box>
+      <a-box
+        position="13 3 -30"
+        width="1"
+        height="8"
+        depth="80"
+        material="color: #060616; metalness: 0.2; roughness: 0.9"
+      ></a-box>
 
       <a-box
-        id="floor"
-        class="floor"
+        position="-12.4 3 -30"
+        width="0.12"
+        height="8"
+        depth="80"
+        material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"
+      ></a-box>
+      <a-box
+        position="12.4 3 -30"
+        width="0.12"
+        height="8"
+        depth="80"
+        material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"
+      ></a-box>
+
+      <!-- Player rig -->
+      <a-entity
+        id="rig"
+        position="0 0 0"
+        movement-controls="speed: 1.6; fly: false"
+      >
+        <a-entity
+          id="camera"
+          camera
+          position="0 1.6 0"
+          look-controls="pointerLockEnabled: false"
+        ></a-entity>
+
+        <a-entity laser-controls="hand: left"></a-entity>
+        <a-entity laser-controls="hand: right"></a-entity>
+        <a-entity hand-tracking-controls="hand: left"></a-entity>
+        <a-entity hand-tracking-controls="hand: right"></a-entity>
+      </a-entity>
+
+      <!-- LED canopy – gradient only on ceiling -->
+      <a-entity
+        geometry="primitive: cylinder; radius: 18; height: 80; openEnded: true; thetaStart: 0; thetaLength: 180"
+        rotation="90 0 90"
+        position="0 9 -30"
+        material="shader: psychedelic-canopy; side: double"
+      ></a-entity>
+
+      <!-- Ground as 3D slab -->
+      <a-box
         position="0 -0.05 -30"
         width="40"
         height="0.1"
@@ -59,7 +302,410 @@
         material="color: #06061a; roughness: 0.95; metalness: 0.05"
       ></a-box>
 
+      <!-- Glowing 3D navigation pathway -->
       <a-box
         position="0 0.03 -30"
         width="5"
-        height="
+        height="0.06"
+        depth="80"
+        material="color: #031a24; emissive: #00d4ff; emissiveIntensity: 1.0; opacity: 0.85; transparent: true; roughness: 0.25; metalness: 0.1"
+        animation__pulse="property: material.emissiveIntensity; from: 0.6; to: 1.8; dir: alternate; dur: 1600; loop: true; easing: easeInOutSine"
+      ></a-box>
+      <a-box
+        position="-2.62 0.035 -30"
+        width="0.18"
+        height="0.07"
+        depth="80"
+        material="color: #00ffff; emissive: #00ffff; emissiveIntensity: 1.6; opacity: 0.95; transparent: true"
+        animation__edge="property: material.opacity; from: 0.45; to: 1.0; dir: alternate; dur: 1200; loop: true"
+      ></a-box>
+      <a-box
+        position="2.62 0.035 -30"
+        width="0.18"
+        height="0.07"
+        depth="80"
+        material="color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 1.6; opacity: 0.95; transparent: true"
+        animation__edge="property: material.opacity; from: 0.45; to: 1.0; dir: alternate; dur: 1350; loop: true"
+      ></a-box>
+
+      <!-- ZONE 1: GRAND TOMORROWLAND ENTRANCE GATE -->
+      <a-entity position="0 0 0">
+        <a-entity
+          light="type: point; intensity: 2.4; distance: 22; decay: 1.6; color: #ffd2a1"
+          position="0 6 -6"
+        ></a-entity>
+        <a-entity
+          light="type: point; intensity: 1.4; distance: 18; decay: 1.5; color: #7af7ff"
+          position="-4 4 -6"
+        ></a-entity>
+        <a-entity
+          light="type: point; intensity: 1.4; distance: 18; decay: 1.5; color: #ff4be1"
+          position="4 4 -6"
+        ></a-entity>
+
+        <!-- Stepped base -->
+        <a-box
+          position="0 0.12 -5.5"
+          width="10"
+          height="0.24"
+          depth="4"
+          material="color: #07071a; metalness: 0.3; roughness: 0.85"
+        ></a-box>
+        <a-box
+          position="0 0.28 -5.7"
+          width="8"
+          height="0.18"
+          depth="3"
+          material="color: #090926; metalness: 0.35; roughness: 0.75"
+        ></a-box>
+
+        <!-- Abstract pylons left -->
+        <a-entity position="-4.2 0 -6">
+          <a-cylinder
+            position="0 2 0"
+            radius="0.55"
+            height="4"
+            material="color: #071022; emissive: #00eaff; emissiveIntensity: 0.8; metalness: 0.9; roughness: 0.2"
+          ></a-cylinder>
+          <a-torus
+            position="0 4.4 0"
+            radius="1.05"
+            radius-tubular="0.08"
+            rotation="90 0 0"
+            material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.6; opacity: 0.9; transparent: true"
+            animation__spin="property: rotation; to: 90 0 360; dur: 9000; easing: linear; loop: true"
+          ></a-torus>
+          <a-icosahedron
+            position="0 5.3 0"
+            radius="0.55"
+            material="color: #0b0420; emissive: #ff2bd6; emissiveIntensity: 0.9; metalness: 0.7; roughness: 0.25"
+          ></a-icosahedron>
+        </a-entity>
+
+        <!-- Abstract pylons right -->
+        <a-entity position="4.2 0 -6">
+          <a-cylinder
+            position="0 2 0"
+            radius="0.55"
+            height="4"
+            material="color: #071022; emissive: #ff2bd6; emissiveIntensity: 0.8; metalness: 0.9; roughness: 0.2"
+          ></a-cylinder>
+          <a-torus
+            position="0 4.4 0"
+            radius="1.05"
+            radius-tubular="0.08"
+            rotation="90 0 0"
+            material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.6; opacity: 0.9; transparent: true"
+            animation__spin="property: rotation; to: 90 0 360; dur: 9500; easing: linear; loop: true"
+          ></a-torus>
+          <a-icosahedron
+            position="0 5.3 0"
+            radius="0.55"
+            material="color: #061226; emissive: #00eaff; emissiveIntensity: 0.9; metalness: 0.7; roughness: 0.25"
+          ></a-icosahedron>
+        </a-entity>
+
+        <!-- Layered portal arch -->
+        <a-torus
+          position="0 3.6 -6.2"
+          radius="4.6"
+          radius-tubular="0.18"
+          material="color: #09091f; emissive: #2b2fff; emissiveIntensity: 0.5; metalness: 0.8; roughness: 0.25"
+        ></a-torus>
+        <a-torus
+          position="0 3.6 -6.2"
+          radius="4.2"
+          radius-tubular="0.1"
+          material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.7; opacity: 0.9; transparent: true"
+          animation__glow="property: material.emissiveIntensity; from: 0.8; to: 2.2; dir: alternate; dur: 1400; loop: true; easing: easeInOutSine"
+        ></a-torus>
+        <a-torus
+          position="0 3.6 -6.2"
+          radius="3.7"
+          radius-tubular="0.1"
+          material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.5; opacity: 0.85; transparent: true"
+          animation__glow="property: material.emissiveIntensity; from: 0.7; to: 2.0; dir: alternate; dur: 1600; loop: true; easing: easeInOutSine"
+        ></a-torus>
+
+        <!-- TOMORROWLAND 3D text -->
+        <a-entity
+          position="0 6.3 -6.2"
+          rotation="0 0 0"
+          float-yoyo="amplitude: 0.12; speed: 0.9"
+          text-geometry="value: TOMORROWLAND; font: https://cdn.jsdelivr.net/gh/mrdoob/three.js@r152/examples/fonts/helvetiker_bold.typeface.json; size: 0.85; height: 0.18; bevelEnabled: true; bevelSize: 0.02; bevelThickness: 0.02; bevelSegments: 2; curveSegments: 8"
+          material="color: #ffffff; emissive: #00eaff; emissiveIntensity: 1.9; metalness: 0.85; roughness: 0.18"
+        ></a-entity>
+      </a-entity>
+
+      <!-- ZONE 2: TICKET BOOKING -->
+      <a-entity position="0 0 -18">
+        <a-entity
+          light="type: point; intensity: 1.8; distance: 18; decay: 1.2; color: #88ddff"
+          position="0 5 0"
+        ></a-entity>
+
+        <a-box
+          position="0 1 0"
+          width="8"
+          height="2"
+          depth="3"
+          material="color: #050815; metalness: 0.6; roughness: 0.25"
+        ></a-box>
+        <a-box
+          position="0 1.2 1.6"
+          width="6.5"
+          height="0.5"
+          depth="0.4"
+          material="color: #0a0f2a; emissive: #3366ff; emissiveIntensity: 1.0; metalness: 0.7"
+        ></a-box>
+
+        <!-- 3D ticket “windows” -->
+        <a-box
+          position="-2 1.4 1.52"
+          width="1.6"
+          height="0.9"
+          depth="0.06"
+          material="color: #001b2f; emissive: #00c6ff; emissiveIntensity: 1.3; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1"
+          animation__flicker="property: material.emissiveIntensity; from: 0.7; to: 1.7; dir: alternate; dur: 900; loop: true"
+        ></a-box>
+        <a-box
+          position="0 1.4 1.52"
+          width="1.6"
+          height="0.9"
+          depth="0.06"
+          material="color: #001b2f; emissive: #00ffea; emissiveIntensity: 1.3; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1"
+          animation__flicker="property: material.emissiveIntensity; from: 0.7; to: 1.8; dir: alternate; dur: 1100; loop: true"
+        ></a-box>
+        <a-box
+          position="2 1.4 1.52"
+          width="1.6"
+          height="0.9"
+          depth="0.06"
+          material="color: #001b2f; emissive: #4dffb8; emissiveIntensity: 1.3; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1"
+          animation__flicker="property: material.emissiveIntensity; from: 0.7; to: 1.7; dir: alternate; dur: 1000; loop: true"
+        ></a-box>
+
+        <!-- Zone 2 label -->
+        <a-entity
+          position="0 3 0.1"
+          float-yoyo="amplitude: 0.2; speed: 1.0"
+        >
+          <a-box
+            width="5"
+            height="0.7"
+            depth="0.08"
+            material="color: #040612; emissive: #040612; opacity: 0.96"
+          ></a-box>
+          <a-entity
+            text="value: ZONE 2 · TICKET BOOKING; align: center; color: #b0f3ff; width: 7; letterSpacing: 4"
+            position="0 0 0.06"
+          ></a-entity>
+        </a-entity>
+      </a-entity>
+
+      <!-- ZONE 3: WRISTBAND STATION + PHOTOBOOTH -->
+      <a-entity position="0 0 -36">
+        <a-entity
+          light="type: point; intensity: 2.1; distance: 18; decay: 1.4; color: #ff66ff"
+          position="0 5 0"
+        ></a-entity>
+
+        <a-box
+          position="0 0.5 0"
+          width="9"
+          height="1"
+          depth="4"
+          material="color: #060615; metalness: 0.4; roughness: 0.35"
+        ></a-box>
+
+        <!-- Wristband trays -->
+        <a-cylinder
+          position="-2 1.1 0.5"
+          radius="0.8"
+          height="0.15"
+          material="color: #120022; emissive: #ff00ff; emissiveIntensity: 1.3; metalness: 0.8"
+        ></a-cylinder>
+        <a-cylinder
+          position="0 1.1 0.5"
+          radius="0.8"
+          height="0.15"
+          material="color: #001212; emissive: #00ffd0; emissiveIntensity: 1.3; metalness: 0.8"
+        ></a-cylinder>
+        <a-cylinder
+          position="2 1.1 0.5"
+          radius="0.8"
+          height="0.15"
+          material="color: #120012; emissive: #ff0080; emissiveIntensity: 1.3; metalness: 0.8"
+        ></a-cylinder>
+
+        <!-- Glow above trays -->
+        <a-torus
+          position="0 1.6 0.5"
+          radius="1.25"
+          radius-tubular="0.15"
+          rotation="90 0 0"
+          material="color: #ff66ff; emissive: #ff66ff; emissiveIntensity: 1.1; opacity: 0.6; transparent: true"
+          animation__pulse="property: material.opacity; from: 0.35; to: 0.9; dir: alternate; dur: 1400; loop: true"
+        ></a-torus>
+
+        <!-- Zone 3 label -->
+        <a-entity
+          position="0 2.8 1.8"
+          float-yoyo="amplitude: 0.2; speed: 1.1"
+        >
+          <a-box
+            width="5.5"
+            height="0.7"
+            depth="0.08"
+            material="color: #050015; emissive: #050015; opacity: 0.96"
+          ></a-box>
+          <a-entity
+            text="value: ZONE 3 · WRISTBAND STATION; align: center; color: #ffd6ff; width: 8; letterSpacing: 4"
+            position="0 0 0.06"
+          ></a-entity>
+        </a-entity>
+
+        <!-- Retro-futuristic photobooth with functional mirror (right side) -->
+        <a-entity position="7 0 0" rotation="0 -20 0">
+          <a-entity
+            light="type: point; intensity: 1.6; distance: 12; decay: 1.7; color: #00eaff"
+            position="0 2 1.2"
+          ></a-entity>
+          <a-entity
+            light="type: point; intensity: 1.2; distance: 10; decay: 1.7; color: #ff2bd6"
+            position="0 2 -0.6"
+          ></a-entity>
+
+          <a-box
+            position="0 1.35 0"
+            width="2.2"
+            height="2.7"
+            depth="1.6"
+            material="color: #08061a; metalness: 0.55; roughness: 0.25"
+          ></a-box>
+
+          <!-- Neon rails -->
+          <a-cylinder
+            position="-1.05 1.35 0.75"
+            radius="0.06"
+            height="2.7"
+            material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.7; opacity: 0.85; transparent: true"
+          ></a-cylinder>
+          <a-cylinder
+            position="1.05 1.35 0.75"
+            radius="0.06"
+            height="2.7"
+            material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.7; opacity: 0.85; transparent: true"
+          ></a-cylinder>
+
+          <!-- Marquee -->
+          <a-box
+            position="0 2.85 0.6"
+            width="2.4"
+            height="0.35"
+            depth="1.2"
+            material="color: #12002a; emissive: #3a00ff; emissiveIntensity: 0.7; metalness: 0.6; roughness: 0.2"
+          ></a-box>
+
+          <a-entity
+            position="0 2.88 1.22"
+            text-geometry="value: PHOTO; font: https://cdn.jsdelivr.net/gh/mrdoob/three.js@r152/examples/fonts/helvetiker_bold.typeface.json; size: 0.28; height: 0.08; bevelEnabled: true; bevelSize: 0.01; bevelThickness: 0.01"
+            material="color: #ffffff; emissive: #00eaff; emissiveIntensity: 1.6; metalness: 0.9; roughness: 0.15"
+          ></a-entity>
+
+          <!-- Mirror frame -->
+          <a-box
+            position="0 1.55 0.82"
+            width="1.55"
+            height="1.55"
+            depth="0.08"
+            material="color: #140028; emissive: #ff2bd6; emissiveIntensity: 0.9; metalness: 0.8; roughness: 0.2"
+            animation__pulse="property: material.emissiveIntensity; from: 0.6; to: 1.4; dir: alternate; dur: 1200; loop: true"
+          ></a-box>
+
+          <!-- Functional mirror surface -->
+          <a-plane
+            position="0 1.55 0.86"
+            width="1.25"
+            height="1.25"
+            material="color: #ffffff"
+            planar-mirror="resolution: 512; intervalMs: 33"
+          ></a-plane>
+
+          <!-- Supersonic fins -->
+          <a-box
+            position="-1.35 1.1 0.1"
+            width="0.15"
+            height="1.2"
+            depth="0.8"
+            rotation="0 0 25"
+            material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.2; opacity: 0.65; transparent: true"
+          ></a-box>
+          <a-box
+            position="1.35 1.1 0.1"
+            width="0.15"
+            height="1.2"
+            depth="0.8"
+            rotation="0 0 -25"
+            material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.2; opacity: 0.65; transparent: true"
+          ></a-box>
+        </a-entity>
+      </a-entity>
+
+      <!-- ZONE 4: ARENA ENTRANCE -->
+      <a-entity position="0 0 -54">
+        <a-entity
+          light="type: point; intensity: 2.4; distance: 22; decay: 1.5; color: #00f0ff"
+          position="0 6 2"
+        ></a-entity>
+
+        <a-box
+          position="0 3 0"
+          width="10"
+          height="6"
+          depth="0.6"
+          material="color: #020409; metalness: 0.6; roughness: 0.2"
+        ></a-box>
+        <a-box
+          position="0 3 0.31"
+          width="6.5"
+          height="4.5"
+          depth="0.1"
+          material="color: #000000; emissive: #000000"
+        ></a-box>
+
+        <a-torus
+          position="0 3 0.55"
+          radius="3.45"
+          radius-tubular="0.08"
+          material="color: #00ffff; emissive: #00ffff; emissiveIntensity: 1.6; opacity: 0.9; transparent: true"
+          animation__glow="property: material.emissiveIntensity; from: 0.9; to: 2.0; dir: alternate; dur: 1300; loop: true"
+        ></a-torus>
+
+        <a-box
+          position="0 3 -4"
+          width="6"
+          height="4.2"
+          depth="8"
+          material="color: #010107; emissive: #04001a; emissiveIntensity: 0.6"
+        ></a-box>
+
+        <a-entity
+          position="0 6 1"
+          float-yoyo="amplitude: 0.25; speed: 0.9"
+        >
+          <a-box
+            width="5.5"
+            height="0.7"
+            depth="0.08"
+            material="color: #02000c; emissive: #02000c; opacity: 0.96"
+          ></a-box>
+          <a-entity
+            text="value: ZONE 4 · ARENA ENTRANCE; align: center; color: #b0ffff; width: 8; letterSpacing: 4"
+            position="0 0 0.06"
+          ></a-entity>
+        </a-entity>
+      </a-entity>
+    </a-scene>
+  </body>
+</html>
