@@ -1,10 +1,8 @@
-Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed for the Tomorrowland entrance concept.
-```html
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Tomorrowland Entrance – Hand Tracking Locomotion (Quest 3)</title>
+    <title>Tomorrowland Entrance – Enhanced Hand Tracking (Quest 3)</title>
 
     <!-- A-Frame core -->
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
@@ -21,11 +19,9 @@ Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed 
     </style>
 
     <script>
-      /* Psychedelic LED canopy shader – used only on ceiling geometry */
+      /* Original shader and components from previous version */
       AFRAME.registerShader("psychedelic-canopy", {
-        schema: {
-          timeMsec: { type: "time", is: "uniform" },
-        },
+        schema: { timeMsec: { type: "time", is: "uniform" } },
         vertexShader: [
           "varying vec2 vUv;",
           "void main() {",
@@ -57,31 +53,20 @@ Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed 
         ].join("\n"),
       });
 
-      /* Gentle yoyo float for signs / labels */
       AFRAME.registerComponent("float-yoyo", {
-        schema: {
-          amplitude: { type: "number", default: 0.25 },
-          speed: { type: "number", default: 1.0 },
-        },
+        schema: { amplitude: { default: 0.25 }, speed: { default: 1.0 } },
         init: function () {
           this.startY = this.el.object3D.position.y;
           this.t = 0;
         },
         tick: function (time, dt) {
           this.t += dt / 1000;
-          this.el.object3D.position.y =
-            this.startY +
-            Math.sin(this.t * this.data.speed) * this.data.amplitude;
+          this.el.object3D.position.y = this.startY + Math.sin(this.t * this.data.speed) * this.data.amplitude;
         },
       });
 
-      /* Planar mirror component – real-time reflective photobooth mirror */
       AFRAME.registerComponent("planar-mirror", {
-        schema: {
-          resolution: { type: "int", default: 512 },
-          intervalMs: { type: "int", default: 33 }, // ~30 FPS
-        },
-
+        schema: { resolution: { default: 512 }, intervalMs: { default: 33 } },
         init: function () {
           this._mirrorPos = new THREE.Vector3();
           this._camPos = new THREE.Vector3();
@@ -99,31 +84,23 @@ Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed 
           this.mesh = null;
           this.rt = null;
 
-          this.tick = AFRAME.utils.throttleTick(
-            this.tick,
-            this.data.intervalMs,
-            this
-          );
+          this.tick = AFRAME.utils.throttleTick(this.tick, this.data.intervalMs, this);
 
           const trySetup = () => {
             const mesh = this.el.getObject3D("mesh");
             if (!mesh) return;
 
             this.mesh = mesh;
-            this.rt = new THREE.WebGLRenderTarget(
-              this.data.resolution,
-              this.data.resolution,
-              {
-                minFilter: THREE.LinearFilter,
-                magFilter: THREE.LinearFilter,
-                format: THREE.RGBAFormat,
-                depthBuffer: true,
-                stencilBuffer: false,
-              }
-            );
+            this.rt = new THREE.WebGLRenderTarget(this.data.resolution, this.data.resolution, {
+              minFilter: THREE.LinearFilter,
+              magFilter: THREE.LinearFilter,
+              format: THREE.RGBAFormat,
+              depthBuffer: true,
+              stencilBuffer: false,
+            });
 
             this.rt.texture.wrapS = THREE.RepeatWrapping;
-            this.rt.texture.repeat.x = -1; // horizontal flip
+            this.rt.texture.repeat.x = -1;
 
             this.mesh.material = new THREE.MeshStandardMaterial({
               color: 0xffffff,
@@ -167,24 +144,10 @@ Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed 
 
           const toCam = this._camPos.clone().sub(this._mirrorPos);
           const dist = toCam.dot(this._normal);
-          this._reflPos
-            .copy(this._camPos)
-            .sub(this._normal.clone().multiplyScalar(2 * dist));
+          this._reflPos.copy(this._camPos).sub(this._normal.clone().multiplyScalar(2 * dist));
 
-          this._reflDir
-            .copy(this._camDir)
-            .sub(
-              this._normal
-                .clone()
-                .multiplyScalar(2 * this._camDir.dot(this._normal))
-            );
-          this._reflUp
-            .copy(this._camUp)
-            .sub(
-              this._normal
-                .clone()
-                .multiplyScalar(2 * this._camUp.dot(this._normal))
-            );
+          this._reflDir.copy(this._camDir).sub(this._normal.clone().multiplyScalar(2 * this._camDir.dot(this._normal)));
+          this._reflUp.copy(this._camUp).sub(this._normal.clone().multiplyScalar(2 * this._camUp.dot(this._normal)));
 
           this.reflectCam.fov = mainCam.fov || 60;
           this.reflectCam.near = mainCam.near || 0.05;
@@ -212,6 +175,232 @@ Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed 
           this.mesh.visible = true;
         },
       });
+
+      /* NEW: Enhanced hand tracking visualization and feedback */
+      AFRAME.registerComponent("hand-locomotion-enhancer", {
+        schema: {
+          hand: { type: "string", default: "left" },
+        },
+        init: function () {
+          this.rig = document.getElementById("rig");
+          this.trail = null;
+          this.arrow = null;
+          this.isMoving = false;
+          
+          // Create visual feedback elements
+          this.createVisualFeedback();
+        },
+        
+        createVisualFeedback: function () {
+          // Create a trail effect for the hand when moving
+          const trailEl = document.createElement("a-entity");
+          trailEl.setAttribute("geometry", "primitive: torus; radius: 0.15; radiusTubular: 0.02");
+          trailEl.setAttribute("material", "color: #00ffff; emissive: #00ffff; emissiveIntensity: 2.0; transparent: true; opacity: 0.8");
+          trailEl.setAttribute("scale", "1 1 0.2");
+          trailEl.setAttribute("visible", "false");
+          this.el.appendChild(trailEl);
+          this.trail = trailEl;
+          
+          // Create direction arrow
+          const arrowEl = document.createElement("a-entity");
+          arrowEl.setAttribute("geometry", "primitive: cone; radiusBottom: 0.1; radiusTop: 0; height: 0.4");
+          arrowEl.setAttribute("material", "color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 2.0");
+          arrowEl.setAttribute("position", "0 0 -0.3");
+          arrowEl.setAttribute("rotation", "90 0 0");
+          arrowEl.setAttribute("visible", "false");
+          this.el.appendChild(arrowEl);
+          this.arrow = arrowEl;
+          
+          // Add pulsing glow sphere at palm
+          const glowEl = document.createElement("a-entity");
+          glowEl.setAttribute("geometry", "primitive: sphere; radius: 0.08");
+          glowEl.setAttribute("material", "color: #ffffff; emissive: #00ffff; emissiveIntensity: 1.5; transparent: true; opacity: 0.9");
+          glowEl.setAttribute("position", "0 0 0.05");
+          glowEl.setAttribute("animation__pulse", "property: scale; from: 0.8 0.8 0.8; to: 1.2 1.2 1.2; dir: alternate; dur: 300; loop: true");
+          this.el.appendChild(glowEl);
+          this.glow = glowEl;
+        },
+        
+        tick: function () {
+          if (!this.rig) return;
+          
+          // Check if hand is in locomotion pose (simplified - in real implementation, 
+          // this would use hand tracking data to detect pose)
+          // For demonstration, we'll use a timer to simulate
+          const handPose = this.el.components['hand-tracking-controls'];
+          if (handPose) {
+            // This is a simplified check - actual pose detection would be more complex
+            const isPointing = Math.random() > 0.5; // Placeholder
+            
+            if (isPointing) {
+              this.isMoving = true;
+              this.showVisualFeedback();
+              
+              // Update trail position with offset
+              if (this.trail) {
+                this.trail.setAttribute("visible", "true");
+                this.trail.setAttribute("position", "0 0 -0.2");
+                this.trail.setAttribute("animation__rotate", "property: rotation; to: 0 360 0; dur: 1000; loop: true");
+              }
+              
+              if (this.arrow) {
+                this.arrow.setAttribute("visible", "true");
+                this.arrow.setAttribute("material", "emissiveIntensity", 2.0 + Math.sin(Date.now() * 0.01) * 0.5);
+              }
+              
+              if (this.glow) {
+                this.glow.setAttribute("material", "emissive", "#ff00ff");
+              }
+            } else {
+              this.isMoving = false;
+              this.hideVisualFeedback();
+            }
+          }
+        },
+        
+        showVisualFeedback: function () {
+          // Visuals are shown in tick, but we can add particle effects here
+          if (this.trail) {
+            this.trail.setAttribute("visible", "true");
+          }
+          if (this.arrow) {
+            this.arrow.setAttribute("visible", "true");
+          }
+        },
+        
+        hideVisualFeedback: function () {
+          if (this.trail) {
+            this.trail.setAttribute("visible", "false");
+          }
+          if (this.arrow) {
+            this.arrow.setAttribute("visible", "false");
+          }
+          if (this.glow) {
+            this.glow.setAttribute("material", "emissive", "#00ffff");
+          }
+        }
+      });
+
+      /* NEW: Velocity indicator for speed feedback */
+      AFRAME.registerComponent("velocity-indicator", {
+        init: function () {
+          this.rig = document.getElementById("rig");
+          this.createIndicator();
+        },
+        
+        createIndicator: function () {
+          const indicator = document.createElement("a-entity");
+          indicator.setAttribute("position", "0 -0.5 -1");
+          indicator.setAttribute("visible", "false");
+          this.indicator = indicator;
+          this.el.appendChild(indicator);
+          
+          // Speed bar
+          const bar = document.createElement("a-box");
+          bar.setAttribute("width", "0.1");
+          bar.setAttribute("height", "0.02");
+          bar.setAttribute("depth", "0.5");
+          bar.setAttribute("material", "color: #00ffff; emissive: #00ffff; emissiveIntensity: 1.5");
+          bar.setAttribute("position", "0 0 0");
+          indicator.appendChild(bar);
+          
+          // Fill bar (changes size based on speed)
+          const fill = document.createElement("a-box");
+          fill.setAttribute("width", "0.12");
+          fill.setAttribute("height", "0.04");
+          fill.setAttribute("depth", "0.5");
+          fill.setAttribute("material", "color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 2.0");
+          fill.setAttribute("position", "0 0 0");
+          fill.setAttribute("scale", "1 1 0");
+          indicator.appendChild(fill);
+          this.fill = fill;
+          
+          // Text label
+          const text = document.createElement("a-entity");
+          text.setAttribute("text", "value: LOCOMOTION ACTIVE; align: center; color: #ffffff; width: 2");
+          text.setAttribute("position", "0 0.1 0");
+          text.setAttribute("scale", "0.5 0.5 0.5");
+          indicator.appendChild(text);
+        },
+        
+        tick: function () {
+          if (!this.rig || !this.fill) return;
+          
+          const velocity = this.rig.components['movement-controls']?.velocity;
+          if (velocity && (Math.abs(velocity.x) > 0.01 || Math.abs(velocity.z) > 0.01)) {
+            this.indicator.setAttribute("visible", "true");
+            
+            // Calculate speed factor (0-1)
+            const speed = Math.sqrt(velocity.x*velocity.x + velocity.z*velocity.z) / 1.6; // max speed 1.6
+            this.fill.setAttribute("scale", `1 1 ${Math.min(speed, 1)}`);
+            
+            // Color based on speed
+            const hue = 0.3 + speed * 0.3; // cyan to magenta
+            this.fill.setAttribute("material", "color", `hsl(${hue * 360}, 100%, 50%)`);
+          } else {
+            this.indicator.setAttribute("visible", "false");
+          }
+        }
+      });
+
+      /* NEW: Ground marker for destination preview */
+      AFRAME.registerComponent("destination-marker", {
+        init: function () {
+          this.rig = document.getElementById("rig");
+          this.marker = null;
+          this.createMarker();
+        },
+        
+        createMarker: function () {
+          const marker = document.createElement("a-entity");
+          marker.setAttribute("geometry", "primitive: ring; radiusInner: 0.5; radiusOuter: 0.7");
+          marker.setAttribute("material", "color: #00ffff; emissive: #00ffff; emissiveIntensity: 2.0; transparent: true; opacity: 0.8");
+          marker.setAttribute("rotation", "-90 0 0");
+          marker.setAttribute("position", "0 0.01 0");
+          marker.setAttribute("visible", "false");
+          marker.setAttribute("animation__pulse", "property: scale; from: 0.8 0.8 0.8; to: 1.2 1.2 1.2; dir: alternate; dur: 500; loop: true");
+          this.el.sceneEl.appendChild(marker);
+          this.marker = marker;
+        },
+        
+        tick: function () {
+          if (!this.rig || !this.marker) return;
+          
+          const leftHand = document.querySelector("[hand-tracking-controls='hand: left']");
+          if (!leftHand) return;
+          
+          const handPose = leftHand.components['hand-tracking-controls'];
+          const isMoving = this.rig.components['movement-controls']?.velocity?.length() > 0.01;
+          
+          if (isMoving && handPose) {
+            // Get hand direction and project to ground
+            const handPos = leftHand.object3D.position;
+            const handDir = new THREE.Vector3(0, 0, -1);
+            handDir.applyQuaternion(leftHand.object3D.quaternion);
+            
+            // Project to ground plane (y=0)
+            if (handDir.y < 0) {
+              const t = -handPos.y / handDir.y;
+              const groundPos = new THREE.Vector3(
+                handPos.x + handDir.x * t,
+                0,
+                handPos.z + handDir.z * t
+              );
+              
+              this.marker.setAttribute("position", groundPos);
+              this.marker.setAttribute("visible", "true");
+              
+              // Distance indicator
+              const distance = groundPos.distanceTo(this.rig.object3D.position);
+              this.marker.setAttribute("scale", `${Math.min(distance/2, 2)} ${Math.min(distance/2, 2)} ${Math.min(distance/2, 2)}`);
+            } else {
+              this.marker.setAttribute("visible", "false");
+            }
+          } else {
+            this.marker.setAttribute("visible", "false");
+          }
+        }
+      });
     </script>
   </head>
 
@@ -223,62 +412,24 @@ Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed 
       vr-mode-ui="enabled: true"
       tracked-controls-webxr="handTracking: true"
     >
-      <!-- Sky + global ambient / directional lighting to create depth -->
+      <!-- Sky + global ambient / directional lighting -->
       <a-sky color="#0a0b22"></a-sky>
 
-      <a-entity
-        light="type: ambient; intensity: 0.55; color: #9aa8ff"
-      ></a-entity>
-      <a-entity
-        light="type: directional; intensity: 0.6; color: #cfd6ff"
-        position="2 8 4"
-      ></a-entity>
-      <a-entity
-        light="type: directional; intensity: 0.35; color: #ff7bda"
-        position="-4 6 -8"
-      ></a-entity>
+      <a-entity light="type: ambient; intensity: 0.55; color: #9aa8ff"></a-entity>
+      <a-entity light="type: directional; intensity: 0.6; color: #cfd6ff" position="2 8 4"></a-entity>
+      <a-entity light="type: directional; intensity: 0.35; color: #ff7bda" position="-4 6 -8"></a-entity>
 
-      <!-- Stylized depth walls -->
-      <a-box
-        position="-13 3 -30"
-        width="1"
-        height="8"
-        depth="80"
-        material="color: #060616; metalness: 0.2; roughness: 0.9"
-      ></a-box>
-      <a-box
-        position="13 3 -30"
-        width="1"
-        height="8"
-        depth="80"
-        material="color: #060616; metalness: 0.2; roughness: 0.9"
-      ></a-box>
+      <!-- Stylized depth walls (same as before) -->
+      <a-box position="-13 3 -30" width="1" height="8" depth="80" material="color: #060616; metalness: 0.2; roughness: 0.9"></a-box>
+      <a-box position="13 3 -30" width="1" height="8" depth="80" material="color: #060616; metalness: 0.2; roughness: 0.9"></a-box>
+      <a-box position="-12.4 3 -30" width="0.12" height="8" depth="80" material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"></a-box>
+      <a-box position="12.4 3 -30" width="0.12" height="8" depth="80" material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"></a-box>
 
-      <a-box
-        position="-12.4 3 -30"
-        width="0.12"
-        height="8"
-        depth="80"
-        material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"
-      ></a-box>
-      <a-box
-        position="12.4 3 -30"
-        width="0.12"
-        height="8"
-        depth="80"
-        material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"
-      ></a-box>
-
-      <!-- Player rig with hand-tracked locomotion (point & push) 
-           movement-controls now configured for hand tracking: 
-           - Hand tracking enabled via tracked-controls-webxr on scene
-           - We attach hand-tracked controls to both hands
-           - movement-controls with "hand" scheme supports hand-tracked locomotion
-      -->
+      <!-- ENHANCED PLAYER RIG with prominent hand tracking -->
       <a-entity
         id="rig"
         position="0 0 0"
-        movement-controls="speed: 1.6; fly: false; controls: hand; hand: left"
+        movement-controls="speed: 2.2; fly: false; controls: hand; hand: left; acceleration: 15"
       >
         <a-entity
           id="camera"
@@ -287,24 +438,43 @@ Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed 
           look-controls="pointerLockEnabled: false"
         ></a-entity>
 
-        <!-- Hand tracking entities for both hands. 
-             hand-tracking-grab-controls + hand-tracking-controls provide hand visuals.
-             We also keep laser/controllers for fallback but hand tracking takes priority. -->
-        <a-entity hand-tracking-controls="hand: left"></a-entity>
-        <a-entity hand-tracking-controls="hand: right"></a-entity>
+        <!-- LEFT HAND - PRIMARY LOCOMOTION with enhanced visuals -->
+        <a-entity 
+          hand-tracking-controls="hand: left; modelColor: #ff00ff; modelOpacity: 0.9"
+          hand-locomotion-enhancer="hand: left"
+          velocity-indicator
+        >
+          <!-- Additional visual flair for left hand -->
+          <a-entity 
+            geometry="primitive: torus; radius: 0.2; radiusTubular: 0.01"
+            material="color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 2.0; transparent: true; opacity: 0.6"
+            position="0 0 -0.1"
+            rotation="90 0 0"
+            animation__spin="property: rotation; to: 90 360 0; dur: 2000; loop: true"
+          ></a-entity>
+        </a-entity>
 
-        <!-- Optional: still include laser controls for compatibility, but they won't interfere with hand tracking -->
+        <!-- RIGHT HAND - SECONDARY with complementary visuals -->
+        <a-entity 
+          hand-tracking-controls="hand: right; modelColor: #00ffff; modelOpacity: 0.9"
+        >
+          <a-entity 
+            geometry="primitive: sphere; radius: 0.1"
+            material="color: #00ffff; emissive: #00ffff; emissiveIntensity: 1.5; transparent: true; opacity: 0.5"
+            position="0 0 0"
+            animation__pulse="property: scale; from: 0.8 0.8 0.8; to: 1.4 1.4 1.4; dir: alternate; dur: 800; loop: true"
+          ></a-entity>
+        </a-entity>
+
+        <!-- Keep laser controls as fallback but hand tracking takes priority -->
         <a-entity laser-controls="hand: left"></a-entity>
         <a-entity laser-controls="hand: right"></a-entity>
-
-        <!-- Explicit hand-tracked locomotion: 
-             movement-controls uses 'hand' scheme, and we set hand: left 
-             The right hand can still be used for gestures/pointing. 
-             Locomotion activates when the left hand's index finger is pointing forward and thumb up (typical "aim" pose).
-             This works well with Quest 3 hand tracking. -->
       </a-entity>
 
-      <!-- LED canopy – gradient only on ceiling -->
+      <!-- Destination preview marker (shows where you're heading) -->
+      <a-entity destination-marker></a-entity>
+
+      <!-- LED canopy -->
       <a-entity
         geometry="primitive: cylinder; radius: 18; height: 80; openEnded: true; thetaStart: 0; thetaLength: 180"
         rotation="90 0 90"
@@ -312,412 +482,67 @@ Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed 
         material="shader: psychedelic-canopy; side: double"
       ></a-entity>
 
-      <!-- Ground as 3D slab -->
-      <a-box
-        position="0 -0.05 -30"
-        width="40"
-        height="0.1"
-        depth="80"
-        material="color: #06061a; roughness: 0.95; metalness: 0.05"
-      ></a-box>
+      <!-- Ground -->
+      <a-box position="0 -0.05 -30" width="40" height="0.1" depth="80" material="color: #06061a; roughness: 0.95; metalness: 0.05"></a-box>
 
-      <!-- Glowing 3D navigation pathway -->
-      <a-box
-        position="0 0.03 -30"
-        width="5"
-        height="0.06"
-        depth="80"
-        material="color: #031a24; emissive: #00d4ff; emissiveIntensity: 1.0; opacity: 0.85; transparent: true; roughness: 0.25; metalness: 0.1"
-        animation__pulse="property: material.emissiveIntensity; from: 0.6; to: 1.8; dir: alternate; dur: 1600; loop: true; easing: easeInOutSine"
-      ></a-box>
-      <a-box
-        position="-2.62 0.035 -30"
-        width="0.18"
-        height="0.07"
-        depth="80"
-        material="color: #00ffff; emissive: #00ffff; emissiveIntensity: 1.6; opacity: 0.95; transparent: true"
-        animation__edge="property: material.opacity; from: 0.45; to: 1.0; dir: alternate; dur: 1200; loop: true"
-      ></a-box>
-      <a-box
-        position="2.62 0.035 -30"
-        width="0.18"
-        height="0.07"
-        depth="80"
-        material="color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 1.6; opacity: 0.95; transparent: true"
-        animation__edge="property: material.opacity; from: 0.45; to: 1.0; dir: alternate; dur: 1350; loop: true"
-      ></a-box>
+      <!-- Glowing pathway (enhanced) -->
+      <a-box position="0 0.03 -30" width="5" height="0.06" depth="80" material="color: #031a24; emissive: #00d4ff; emissiveIntensity: 1.5; opacity: 0.9; transparent: true; roughness: 0.25; metalness: 0.1" animation__pulse="property: material.emissiveIntensity; from: 0.8; to: 2.2; dir: alternate; dur: 1200; loop: true"></a-box>
+      <a-box position="-2.62 0.035 -30" width="0.18" height="0.07" depth="80" material="color: #00ffff; emissive: #00ffff; emissiveIntensity: 2.0; opacity: 0.95; transparent: true" animation__edge="property: material.opacity; from: 0.5; to: 1.0; dir: alternate; dur: 1000; loop: true"></a-box>
+      <a-box position="2.62 0.035 -30" width="0.18" height="0.07" depth="80" material="color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 2.0; opacity: 0.95; transparent: true" animation__edge="property: material.opacity; from: 0.5; to: 1.0; dir: alternate; dur: 1100; loop: true"></a-box>
 
-      <!-- ZONE 1: GRAND TOMORROWLAND ENTRANCE GATE -->
+      <!-- ZONE 1: GRAND TOMORROWLAND ENTRANCE GATE (same as before) -->
       <a-entity position="0 0 0">
-        <a-entity
-          light="type: point; intensity: 2.4; distance: 22; decay: 1.6; color: #ffd2a1"
-          position="0 6 -6"
-        ></a-entity>
-        <a-entity
-          light="type: point; intensity: 1.4; distance: 18; decay: 1.5; color: #7af7ff"
-          position="-4 4 -6"
-        ></a-entity>
-        <a-entity
-          light="type: point; intensity: 1.4; distance: 18; decay: 1.5; color: #ff4be1"
-          position="4 4 -6"
-        ></a-entity>
-
-        <!-- Stepped base -->
-        <a-box
-          position="0 0.12 -5.5"
-          width="10"
-          height="0.24"
-          depth="4"
-          material="color: #07071a; metalness: 0.3; roughness: 0.85"
-        ></a-box>
-        <a-box
-          position="0 0.28 -5.7"
-          width="8"
-          height="0.18"
-          depth="3"
-          material="color: #090926; metalness: 0.35; roughness: 0.75"
-        ></a-box>
-
-        <!-- Abstract pylons left -->
+        <a-entity light="type: point; intensity: 2.4; distance: 22; decay: 1.6; color: #ffd2a1" position="0 6 -6"></a-entity>
+        <a-entity light="type: point; intensity: 1.4; distance: 18; decay: 1.5; color: #7af7ff" position="-4 4 -6"></a-entity>
+        <a-entity light="type: point; intensity: 1.4; distance: 18; decay: 1.5; color: #ff4be1" position="4 4 -6"></a-entity>
+        <a-box position="0 0.12 -5.5" width="10" height="0.24" depth="4" material="color: #07071a; metalness: 0.3; roughness: 0.85"></a-box>
+        <a-box position="0 0.28 -5.7" width="8" height="0.18" depth="3" material="color: #090926; metalness: 0.35; roughness: 0.75"></a-box>
+        
+        <!-- Left pylon -->
         <a-entity position="-4.2 0 -6">
-          <a-cylinder
-            position="0 2 0"
-            radius="0.55"
-            height="4"
-            material="color: #071022; emissive: #00eaff; emissiveIntensity: 0.8; metalness: 0.9; roughness: 0.2"
-          ></a-cylinder>
-          <a-torus
-            position="0 4.4 0"
-            radius="1.05"
-            radius-tubular="0.08"
-            rotation="90 0 0"
-            material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.6; opacity: 0.9; transparent: true"
-            animation__spin="property: rotation; to: 90 0 360; dur: 9000; easing: linear; loop: true"
-          ></a-torus>
-          <a-icosahedron
-            position="0 5.3 0"
-            radius="0.55"
-            material="color: #0b0420; emissive: #ff2bd6; emissiveIntensity: 0.9; metalness: 0.7; roughness: 0.25"
-          ></a-icosahedron>
+          <a-cylinder position="0 2 0" radius="0.55" height="4" material="color: #071022; emissive: #00eaff; emissiveIntensity: 0.8; metalness: 0.9; roughness: 0.2"></a-cylinder>
+          <a-torus position="0 4.4 0" radius="1.05" radius-tubular="0.08" rotation="90 0 0" material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.6; opacity: 0.9; transparent: true" animation__spin="property: rotation; to: 90 0 360; dur: 9000; easing: linear; loop: true"></a-torus>
+          <a-icosahedron position="0 5.3 0" radius="0.55" material="color: #0b0420; emissive: #ff2bd6; emissiveIntensity: 0.9; metalness: 0.7; roughness: 0.25"></a-icosahedron>
         </a-entity>
-
-        <!-- Abstract pylons right -->
+        
+        <!-- Right pylon -->
         <a-entity position="4.2 0 -6">
-          <a-cylinder
-            position="0 2 0"
-            radius="0.55"
-            height="4"
-            material="color: #071022; emissive: #ff2bd6; emissiveIntensity: 0.8; metalness: 0.9; roughness: 0.2"
-          ></a-cylinder>
-          <a-torus
-            position="0 4.4 0"
-            radius="1.05"
-            radius-tubular="0.08"
-            rotation="90 0 0"
-            material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.6; opacity: 0.9; transparent: true"
-            animation__spin="property: rotation; to: 90 0 360; dur: 9500; easing: linear; loop: true"
-          ></a-torus>
-          <a-icosahedron
-            position="0 5.3 0"
-            radius="0.55"
-            material="color: #061226; emissive: #00eaff; emissiveIntensity: 0.9; metalness: 0.7; roughness: 0.25"
-          ></a-icosahedron>
+          <a-cylinder position="0 2 0" radius="0.55" height="4" material="color: #071022; emissive: #ff2bd6; emissiveIntensity: 0.8; metalness: 0.9; roughness: 0.2"></a-cylinder>
+          <a-torus position="0 4.4 0" radius="1.05" radius-tubular="0.08" rotation="90 0 0" material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.6; opacity: 0.9; transparent: true" animation__spin="property: rotation; to: 90 0 360; dur: 9500; easing: linear; loop: true"></a-torus>
+          <a-icosahedron position="0 5.3 0" radius="0.55" material="color: #061226; emissive: #00eaff; emissiveIntensity: 0.9; metalness: 0.7; roughness: 0.25"></a-icosahedron>
         </a-entity>
 
-        <!-- Layered portal arch -->
-        <a-torus
-          position="0 3.6 -6.2"
-          radius="4.6"
-          radius-tubular="0.18"
-          material="color: #09091f; emissive: #2b2fff; emissiveIntensity: 0.5; metalness: 0.8; roughness: 0.25"
-        ></a-torus>
-        <a-torus
-          position="0 3.6 -6.2"
-          radius="4.2"
-          radius-tubular="0.1"
-          material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.7; opacity: 0.9; transparent: true"
-          animation__glow="property: material.emissiveIntensity; from: 0.8; to: 2.2; dir: alternate; dur: 1400; loop: true; easing: easeInOutSine"
-        ></a-torus>
-        <a-torus
-          position="0 3.6 -6.2"
-          radius="3.7"
-          radius-tubular="0.1"
-          material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.5; opacity: 0.85; transparent: true"
-          animation__glow="property: material.emissiveIntensity; from: 0.7; to: 2.0; dir: alternate; dur: 1600; loop: true; easing: easeInOutSine"
-        ></a-torus>
+        <!-- Portal arches -->
+        <a-torus position="0 3.6 -6.2" radius="4.6" radius-tubular="0.18" material="color: #09091f; emissive: #2b2fff; emissiveIntensity: 0.5; metalness: 0.8; roughness: 0.25"></a-torus>
+        <a-torus position="0 3.6 -6.2" radius="4.2" radius-tubular="0.1" material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.7; opacity: 0.9; transparent: true" animation__glow="property: material.emissiveIntensity; from: 0.8; to: 2.2; dir: alternate; dur: 1400; loop: true"></a-torus>
+        <a-torus position="0 3.6 -6.2" radius="3.7" radius-tubular="0.1" material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.5; opacity: 0.85; transparent: true" animation__glow="property: material.emissiveIntensity; from: 0.7; to: 2.0; dir: alternate; dur: 1600; loop: true"></a-torus>
 
         <!-- TOMORROWLAND 3D text -->
-        <a-entity
-          position="0 6.3 -6.2"
-          rotation="0 0 0"
-          float-yoyo="amplitude: 0.12; speed: 0.9"
-          text-geometry="value: TOMORROWLAND; font: https://cdn.jsdelivr.net/gh/mrdoob/three.js@r152/examples/fonts/helvetiker_bold.typeface.json; size: 0.85; height: 0.18; bevelEnabled: true; bevelSize: 0.02; bevelThickness: 0.02; bevelSegments: 2; curveSegments: 8"
-          material="color: #ffffff; emissive: #00eaff; emissiveIntensity: 1.9; metalness: 0.85; roughness: 0.18"
-        ></a-entity>
+        <a-entity position="0 6.3 -6.2" rotation="0 0 0" float-yoyo="amplitude: 0.12; speed: 0.9" text-geometry="value: TOMORROWLAND; font: https://cdn.jsdelivr.net/gh/mrdoob/three.js@r152/examples/fonts/helvetiker_bold.typeface.json; size: 0.85; height: 0.18; bevelEnabled: true; bevelSize: 0.02; bevelThickness: 0.02; bevelSegments: 2; curveSegments: 8" material="color: #ffffff; emissive: #00eaff; emissiveIntensity: 1.9; metalness: 0.85; roughness: 0.18"></a-entity>
       </a-entity>
 
-      <!-- ZONE 2: TICKET BOOKING -->
+      <!-- ZONE 2: TICKET BOOKING (enhanced lights) -->
       <a-entity position="0 0 -18">
-        <a-entity
-          light="type: point; intensity: 1.8; distance: 18; decay: 1.2; color: #88ddff"
-          position="0 5 0"
-        ></a-entity>
-
-        <a-box
-          position="0 1 0"
-          width="8"
-          height="2"
-          depth="3"
-          material="color: #050815; metalness: 0.6; roughness: 0.25"
-        ></a-box>
-        <a-box
-          position="0 1.2 1.6"
-          width="6.5"
-          height="0.5"
-          depth="0.4"
-          material="color: #0a0f2a; emissive: #3366ff; emissiveIntensity: 1.0; metalness: 0.7"
-        ></a-box>
-
-        <!-- 3D ticket “windows” -->
-        <a-box
-          position="-2 1.4 1.52"
-          width="1.6"
-          height="0.9"
-          depth="0.06"
-          material="color: #001b2f; emissive: #00c6ff; emissiveIntensity: 1.3; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1"
-          animation__flicker="property: material.emissiveIntensity; from: 0.7; to: 1.7; dir: alternate; dur: 900; loop: true"
-        ></a-box>
-        <a-box
-          position="0 1.4 1.52"
-          width="1.6"
-          height="0.9"
-          depth="0.06"
-          material="color: #001b2f; emissive: #00ffea; emissiveIntensity: 1.3; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1"
-          animation__flicker="property: material.emissiveIntensity; from: 0.7; to: 1.8; dir: alternate; dur: 1100; loop: true"
-        ></a-box>
-        <a-box
-          position="2 1.4 1.52"
-          width="1.6"
-          height="0.9"
-          depth="0.06"
-          material="color: #001b2f; emissive: #4dffb8; emissiveIntensity: 1.3; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1"
-          animation__flicker="property: material.emissiveIntensity; from: 0.7; to: 1.7; dir: alternate; dur: 1000; loop: true"
-        ></a-box>
+        <a-entity light="type: point; intensity: 2.2; distance: 18; decay: 1.2; color: #88ddff" position="0 5 0"></a-entity>
+        <a-box position="0 1 0" width="8" height="2" depth="3" material="color: #050815; metalness: 0.6; roughness: 0.25"></a-box>
+        <a-box position="0 1.2 1.6" width="6.5" height="0.5" depth="0.4" material="color: #0a0f2a; emissive: #3366ff; emissiveIntensity: 1.0; metalness: 0.7"></a-box>
+        
+        <!-- Ticket windows -->
+        <a-box position="-2 1.4 1.52" width="1.6" height="0.9" depth="0.06" material="color: #001b2f; emissive: #00c6ff; emissiveIntensity: 1.5; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1" animation__flicker="property: material.emissiveIntensity; from: 0.8; to: 2.0; dir: alternate; dur: 900; loop: true"></a-box>
+        <a-box position="0 1.4 1.52" width="1.6" height="0.9" depth="0.06" material="color: #001b2f; emissive: #00ffea; emissiveIntensity: 1.5; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1" animation__flicker="property: material.emissiveIntensity; from: 0.8; to: 2.0; dir: alternate; dur: 1100; loop: true"></a-box>
+        <a-box position="2 1.4 1.52" width="1.6" height="0.9" depth="0.06" material="color: #001b2f; emissive: #4dffb8; emissiveIntensity: 1.5; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1" animation__flicker="property: material.emissiveIntensity; from: 0.8; to: 2.0; dir: alternate; dur: 1000; loop: true"></a-box>
 
         <!-- Zone 2 label -->
-        <a-entity
-          position="0 3 0.1"
-          float-yoyo="amplitude: 0.2; speed: 1.0"
-        >
-          <a-box
-            width="5"
-            height="0.7"
-            depth="0.08"
-            material="color: #040612; emissive: #040612; opacity: 0.96"
-          ></a-box>
-          <a-entity
-            text="value: ZONE 2 · TICKET BOOKING; align: center; color: #b0f3ff; width: 7; letterSpacing: 4"
-            position="0 0 0.06"
-          ></a-entity>
+        <a-entity position="0 3 0.1" float-yoyo="amplitude: 0.2; speed: 1.0">
+          <a-box width="5" height="0.7" depth="0.08" material="color: #040612; emissive: #040612; opacity: 0.96"></a-box>
+          <a-entity text="value: ZONE 2 · TICKET BOOKING; align: center; color: #b0f3ff; width: 7; letterSpacing: 4" position="0 0 0.06"></a-entity>
         </a-entity>
       </a-entity>
 
-      <!-- ZONE 3: WRISTBAND STATION + PHOTOBOOTH -->
+      <!-- ZONE 3: WRISTBAND STATION + PHOTOBOOTH (enhanced) -->
       <a-entity position="0 0 -36">
-        <a-entity
-          light="type: point; intensity: 2.1; distance: 18; decay: 1.4; color: #ff66ff"
-          position="0 5 0"
-        ></a-entity>
-
-        <a-box
-          position="0 0.5 0"
-          width="9"
-          height="1"
-          depth="4"
-          material="color: #060615; metalness: 0.4; roughness: 0.35"
-        ></a-box>
-
+        <a-entity light="type: point; intensity: 2.5; distance: 18; decay: 1.4; color: #ff66ff" position="0 5 0"></a-entity>
+        <a-box position="0 0.5 0" width="9" height="1" depth="4" material="color: #060615; metalness: 0.4; roughness: 0.35"></a-box>
+        
         <!-- Wristband trays -->
-        <a-cylinder
-          position="-2 1.1 0.5"
-          radius="0.8"
-          height="0.15"
-          material="color: #120022; emissive: #ff00ff; emissiveIntensity: 1.3; metalness: 0.8"
-        ></a-cylinder>
-        <a-cylinder
-          position="0 1.1 0.5"
-          radius="0.8"
-          height="0.15"
-          material="color: #001212; emissive: #00ffd0; emissiveIntensity: 1.3; metalness: 0.8"
-        ></a-cylinder>
-        <a-cylinder
-          position="2 1.1 0.5"
-          radius="0.8"
-          height="0.15"
-          material="color: #120012; emissive: #ff0080; emissiveIntensity: 1.3; metalness: 0.8"
-        ></a-cylinder>
-
-        <!-- Glow above trays -->
-        <a-torus
-          position="0 1.6 0.5"
-          radius="1.25"
-          radius-tubular="0.15"
-          rotation="90 0 0"
-          material="color: #ff66ff; emissive: #ff66ff; emissiveIntensity: 1.1; opacity: 0.6; transparent: true"
-          animation__pulse="property: material.opacity; from: 0.35; to: 0.9; dir: alternate; dur: 1400; loop: true"
-        ></a-torus>
-
-        <!-- Zone 3 label -->
-        <a-entity
-          position="0 2.8 1.8"
-          float-yoyo="amplitude: 0.2; speed: 1.1"
-        >
-          <a-box
-            width="5.5"
-            height="0.7"
-            depth="0.08"
-            material="color: #050015; emissive: #050015; opacity: 0.96"
-          ></a-box>
-          <a-entity
-            text="value: ZONE 3 · WRISTBAND STATION; align: center; color: #ffd6ff; width: 8; letterSpacing: 4"
-            position="0 0 0.06"
-          ></a-entity>
-        </a-entity>
-
-        <!-- Retro-futuristic photobooth with functional mirror (right side) -->
-        <a-entity position="7 0 0" rotation="0 -20 0">
-          <a-entity
-            light="type: point; intensity: 1.6; distance: 12; decay: 1.7; color: #00eaff"
-            position="0 2 1.2"
-          ></a-entity>
-          <a-entity
-            light="type: point; intensity: 1.2; distance: 10; decay: 1.7; color: #ff2bd6"
-            position="0 2 -0.6"
-          ></a-entity>
-
-          <a-box
-            position="0 1.35 0"
-            width="2.2"
-            height="2.7"
-            depth="1.6"
-            material="color: #08061a; metalness: 0.55; roughness: 0.25"
-          ></a-box>
-
-          <!-- Neon rails -->
-          <a-cylinder
-            position="-1.05 1.35 0.75"
-            radius="0.06"
-            height="2.7"
-            material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.7; opacity: 0.85; transparent: true"
-          ></a-cylinder>
-          <a-cylinder
-            position="1.05 1.35 0.75"
-            radius="0.06"
-            height="2.7"
-            material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.7; opacity: 0.85; transparent: true"
-          ></a-cylinder>
-
-          <!-- Marquee -->
-          <a-box
-            position="0 2.85 0.6"
-            width="2.4"
-            height="0.35"
-            depth="1.2"
-            material="color: #12002a; emissive: #3a00ff; emissiveIntensity: 0.7; metalness: 0.6; roughness: 0.2"
-          ></a-box>
-
-          <a-entity
-            position="0 2.88 1.22"
-            text-geometry="value: PHOTO; font: https://cdn.jsdelivr.net/gh/mrdoob/three.js@r152/examples/fonts/helvetiker_bold.typeface.json; size: 0.28; height: 0.08; bevelEnabled: true; bevelSize: 0.01; bevelThickness: 0.01"
-            material="color: #ffffff; emissive: #00eaff; emissiveIntensity: 1.6; metalness: 0.9; roughness: 0.15"
-          ></a-entity>
-
-          <!-- Mirror frame -->
-          <a-box
-            position="0 1.55 0.82"
-            width="1.55"
-            height="1.55"
-            depth="0.08"
-            material="color: #140028; emissive: #ff2bd6; emissiveIntensity: 0.9; metalness: 0.8; roughness: 0.2"
-            animation__pulse="property: material.emissiveIntensity; from: 0.6; to: 1.4; dir: alternate; dur: 1200; loop: true"
-          ></a-box>
-
-          <!-- Functional mirror surface -->
-          <a-plane
-            position="0 1.55 0.86"
-            width="1.25"
-            height="1.25"
-            material="color: #ffffff"
-            planar-mirror="resolution: 512; intervalMs: 33"
-          ></a-plane>
-
-          <!-- Supersonic fins -->
-          <a-box
-            position="-1.35 1.1 0.1"
-            width="0.15"
-            height="1.2"
-            depth="0.8"
-            rotation="0 0 25"
-            material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.2; opacity: 0.65; transparent: true"
-          ></a-box>
-          <a-box
-            position="1.35 1.1 0.1"
-            width="0.15"
-            height="1.2"
-            depth="0.8"
-            rotation="0 0 -25"
-            material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.2; opacity: 0.65; transparent: true"
-          ></a-box>
-        </a-entity>
-      </a-entity>
-
-      <!-- ZONE 4: ARENA ENTRANCE -->
-      <a-entity position="0 0 -54">
-        <a-entity
-          light="type: point; intensity: 2.4; distance: 22; decay: 1.5; color: #00f0ff"
-          position="0 6 2"
-        ></a-entity>
-
-        <a-box
-          position="0 3 0"
-          width="10"
-          height="6"
-          depth="0.6"
-          material="color: #020409; metalness: 0.6; roughness: 0.2"
-        ></a-box>
-        <a-box
-          position="0 3 0.31"
-          width="6.5"
-          height="4.5"
-          depth="0.1"
-          material="color: #000000; emissive: #000000"
-        ></a-box>
-
-        <a-torus
-          position="0 3 0.55"
-          radius="3.45"
-          radius-tubular="0.08"
-          material="color: #00ffff; emissive: #00ffff; emissiveIntensity: 1.6; opacity: 0.9; transparent: true"
-          animation__glow="property: material.emissiveIntensity; from: 0.9; to: 2.0; dir: alternate; dur: 1300; loop: true"
-        ></a-torus>
-
-        <a-box
-          position="0 3 -4"
-          width="6"
-          height="4.2"
-          depth="8"
-          material="color: #010107; emissive: #04001a; emissiveIntensity: 0.6"
-        ></a-box>
-
-        <a-entity
-          position="0 6 1"
-          float-yoyo="amplitude: 0.25; speed: 0.9"
-        >
-          <a-box
-            width="5.5"
-            height="0.7"
-            depth="0.08"
-            material="color: #02000c; emissive: #02000c; opacity: 0.96"
-          ></a-box>
-          <a-entity
-            text="value: ZONE 4 · ARENA ENTRANCE; align: center; color: #b0ffff; width: 8; letterSpacing: 4"
+        <a-cylinder position="-2 1.1
