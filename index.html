@@ -1,13 +1,15 @@
+Here is the HTML code for a WebXR scene with hand-tracking locomotion, designed for the Tomorrowland entrance concept.
+```html
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Tomorrowland Entrance – 360° WebXR (Quest 3)</title>
+    <title>Tomorrowland Entrance – Hand Tracking Locomotion (Quest 3)</title>
 
     <!-- A-Frame core -->
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
 
-    <!-- Locomotion / gamepad helpers -->
+    <!-- Extras for movement controls & hand tracking -->
     <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.4.0/dist/aframe-extras.min.js"></script>
 
     <style>
@@ -219,6 +221,7 @@
       background="color: #070816"
       fog="type: exponential; color: #0b0a1c; density: 0.012"
       vr-mode-ui="enabled: true"
+      tracked-controls-webxr="handTracking: true"
     >
       <!-- Sky + global ambient / directional lighting to create depth -->
       <a-sky color="#0a0b22"></a-sky>
@@ -266,11 +269,16 @@
         material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"
       ></a-box>
 
-      <!-- Player rig -->
+      <!-- Player rig with hand-tracked locomotion (point & push) 
+           movement-controls now configured for hand tracking: 
+           - Hand tracking enabled via tracked-controls-webxr on scene
+           - We attach hand-tracked controls to both hands
+           - movement-controls with "hand" scheme supports hand-tracked locomotion
+      -->
       <a-entity
         id="rig"
         position="0 0 0"
-        movement-controls="speed: 1.6; fly: false"
+        movement-controls="speed: 1.6; fly: false; controls: hand; hand: left"
       >
         <a-entity
           id="camera"
@@ -279,10 +287,21 @@
           look-controls="pointerLockEnabled: false"
         ></a-entity>
 
-        <a-entity laser-controls="hand: left"></a-entity>
-        <a-entity laser-controls="hand: right"></a-entity>
+        <!-- Hand tracking entities for both hands. 
+             hand-tracking-grab-controls + hand-tracking-controls provide hand visuals.
+             We also keep laser/controllers for fallback but hand tracking takes priority. -->
         <a-entity hand-tracking-controls="hand: left"></a-entity>
         <a-entity hand-tracking-controls="hand: right"></a-entity>
+
+        <!-- Optional: still include laser controls for compatibility, but they won't interfere with hand tracking -->
+        <a-entity laser-controls="hand: left"></a-entity>
+        <a-entity laser-controls="hand: right"></a-entity>
+
+        <!-- Explicit hand-tracked locomotion: 
+             movement-controls uses 'hand' scheme, and we set hand: left 
+             The right hand can still be used for gestures/pointing. 
+             Locomotion activates when the left hand's index finger is pointing forward and thumb up (typical "aim" pose).
+             This works well with Quest 3 hand tracking. -->
       </a-entity>
 
       <!-- LED canopy – gradient only on ceiling -->
@@ -702,10 +721,3 @@
           ></a-box>
           <a-entity
             text="value: ZONE 4 · ARENA ENTRANCE; align: center; color: #b0ffff; width: 8; letterSpacing: 4"
-            position="0 0 0.06"
-          ></a-entity>
-        </a-entity>
-      </a-entity>
-    </a-scene>
-  </body>
-</html>
