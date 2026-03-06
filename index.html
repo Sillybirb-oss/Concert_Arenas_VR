@@ -2,547 +2,339 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Tomorrowland Entrance – Enhanced Hand Tracking (Quest 3)</title>
+    <title>Tomorrowland Path – Hand‑tracking walk & pinch turns (Quest 3)</title>
 
-    <!-- A-Frame core -->
+    <!-- A-Frame & extras -->
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
-
-    <!-- Extras for movement controls & hand tracking -->
     <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.4.0/dist/aframe-extras.min.js"></script>
+    <!-- teleport controls (still used for movement, but we override turn with custom pinch) -->
+    <script src="https://cdn.jsdelivr.net/gh/diarmidmackenzie/aframe-teleport-controls@1.1.0/dist/aframe-teleport-controls.min.js"></script>
 
     <style>
-      body {
-        margin: 0;
-        overflow: hidden;
-        background: #000;
-      }
+      body { margin: 0; overflow: hidden; background: #000; }
     </style>
-
-    <script>
-      /* Original shader and components from previous version */
-      AFRAME.registerShader("psychedelic-canopy", {
-        schema: { timeMsec: { type: "time", is: "uniform" } },
-        vertexShader: [
-          "varying vec2 vUv;",
-          "void main() {",
-          "  vUv = uv;",
-          "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
-          "}",
-        ].join("\n"),
-        fragmentShader: [
-          "uniform float timeMsec;",
-          "varying vec2 vUv;",
-          "void main() {",
-          "  float t = timeMsec * 0.00025;",
-          "  vec2 p = vUv * 4.0;",
-          "  float angle = sin(p.y + t) * 1.5 + cos(p.x * 1.2 - t * 0.7);",
-          "  float radius = length(p - 2.0);",
-          "  float swirl = sin(radius * 4.0 - t * 3.0 + angle);",
-          "  float bands = sin((p.x + swirl) * 3.0 + t * 2.0);",
-          "  float bands2 = cos((p.y - swirl) * 2.5 - t * 1.7);",
-          "  vec3 base = vec3(0.1, 0.0, 0.15);",
-          "  vec3 neon1 = vec3(0.2, 0.8, 1.0);",
-          "  vec3 neon2 = vec3(1.0, 0.1, 0.7);",
-          "  vec3 neon3 = vec3(0.1, 1.0, 0.4);",
-          "  float m1 = smoothstep(0.0, 1.0, 0.5 + 0.5 * bands);",
-          "  float m2 = smoothstep(0.0, 1.0, 0.5 + 0.5 * bands2);",
-          "  vec3 color = base + m1 * neon1 + m2 * neon2 + (1.0 - abs(swirl)) * 0.4 * neon3;",
-          "  color *= 1.4;",
-          "  gl_FragColor = vec4(color, 1.0);",
-          "}",
-        ].join("\n"),
-      });
-
-      AFRAME.registerComponent("float-yoyo", {
-        schema: { amplitude: { default: 0.25 }, speed: { default: 1.0 } },
-        init: function () {
-          this.startY = this.el.object3D.position.y;
-          this.t = 0;
-        },
-        tick: function (time, dt) {
-          this.t += dt / 1000;
-          this.el.object3D.position.y = this.startY + Math.sin(this.t * this.data.speed) * this.data.amplitude;
-        },
-      });
-
-      AFRAME.registerComponent("planar-mirror", {
-        schema: { resolution: { default: 512 }, intervalMs: { default: 33 } },
-        init: function () {
-          this._mirrorPos = new THREE.Vector3();
-          this._camPos = new THREE.Vector3();
-          this._normal = new THREE.Vector3();
-          this._q = new THREE.Quaternion();
-          this._camQ = new THREE.Quaternion();
-          this._camDir = new THREE.Vector3();
-          this._camUp = new THREE.Vector3();
-          this._reflPos = new THREE.Vector3();
-          this._reflDir = new THREE.Vector3();
-          this._reflUp = new THREE.Vector3();
-          this._lookAt = new THREE.Vector3();
-
-          this.reflectCam = new THREE.PerspectiveCamera();
-          this.mesh = null;
-          this.rt = null;
-
-          this.tick = AFRAME.utils.throttleTick(this.tick, this.data.intervalMs, this);
-
-          const trySetup = () => {
-            const mesh = this.el.getObject3D("mesh");
-            if (!mesh) return;
-
-            this.mesh = mesh;
-            this.rt = new THREE.WebGLRenderTarget(this.data.resolution, this.data.resolution, {
-              minFilter: THREE.LinearFilter,
-              magFilter: THREE.LinearFilter,
-              format: THREE.RGBAFormat,
-              depthBuffer: true,
-              stencilBuffer: false,
-            });
-
-            this.rt.texture.wrapS = THREE.RepeatWrapping;
-            this.rt.texture.repeat.x = -1;
-
-            this.mesh.material = new THREE.MeshStandardMaterial({
-              color: 0xffffff,
-              metalness: 1.0,
-              roughness: 0.03,
-              map: this.rt.texture,
-              emissive: new THREE.Color(0x111122),
-              emissiveIntensity: 0.25,
-            });
-          };
-
-          this.el.addEventListener("object3dset", (e) => {
-            if (e.detail.type === "mesh") trySetup();
-          });
-
-          if (this.el.getObject3D("mesh")) trySetup();
-        },
-
-        tick: function () {
-          if (!this.mesh || !this.rt) return;
-
-          const sceneEl = this.el.sceneEl;
-          const renderer = sceneEl && sceneEl.renderer;
-          const threeScene = sceneEl && sceneEl.object3D;
-          let mainCam = sceneEl && sceneEl.camera;
-          if (!renderer || !threeScene || !mainCam) return;
-
-          if (mainCam.isArrayCamera && mainCam.cameras && mainCam.cameras.length) {
-            mainCam = mainCam.cameras[0];
-          }
-
-          this.el.object3D.getWorldPosition(this._mirrorPos);
-          this.el.object3D.getWorldQuaternion(this._q);
-          this._normal.set(0, 0, 1).applyQuaternion(this._q).normalize();
-
-          mainCam.getWorldPosition(this._camPos);
-          mainCam.getWorldQuaternion(this._camQ);
-
-          this._camDir.set(0, 0, -1).applyQuaternion(this._camQ).normalize();
-          this._camUp.set(0, 1, 0).applyQuaternion(this._camQ).normalize();
-
-          const toCam = this._camPos.clone().sub(this._mirrorPos);
-          const dist = toCam.dot(this._normal);
-          this._reflPos.copy(this._camPos).sub(this._normal.clone().multiplyScalar(2 * dist));
-
-          this._reflDir.copy(this._camDir).sub(this._normal.clone().multiplyScalar(2 * this._camDir.dot(this._normal)));
-          this._reflUp.copy(this._camUp).sub(this._normal.clone().multiplyScalar(2 * this._camUp.dot(this._normal)));
-
-          this.reflectCam.fov = mainCam.fov || 60;
-          this.reflectCam.near = mainCam.near || 0.05;
-          this.reflectCam.far = mainCam.far || 2000;
-          this.reflectCam.aspect = 1;
-
-          this.reflectCam.position.copy(this._reflPos);
-          this.reflectCam.up.copy(this._reflUp);
-          this._lookAt.copy(this._reflPos).add(this._reflDir);
-          this.reflectCam.lookAt(this._lookAt);
-          this.reflectCam.updateProjectionMatrix();
-
-          const prevRT = renderer.getRenderTarget();
-          const prevXr = renderer.xr.enabled;
-
-          this.mesh.visible = false;
-          renderer.xr.enabled = false;
-
-          renderer.setRenderTarget(this.rt);
-          renderer.clear();
-          renderer.render(threeScene, this.reflectCam);
-
-          renderer.setRenderTarget(prevRT);
-          renderer.xr.enabled = prevXr;
-          this.mesh.visible = true;
-        },
-      });
-
-      /* NEW: Enhanced hand tracking visualization and feedback */
-      AFRAME.registerComponent("hand-locomotion-enhancer", {
-        schema: {
-          hand: { type: "string", default: "left" },
-        },
-        init: function () {
-          this.rig = document.getElementById("rig");
-          this.trail = null;
-          this.arrow = null;
-          this.isMoving = false;
-          
-          // Create visual feedback elements
-          this.createVisualFeedback();
-        },
-        
-        createVisualFeedback: function () {
-          // Create a trail effect for the hand when moving
-          const trailEl = document.createElement("a-entity");
-          trailEl.setAttribute("geometry", "primitive: torus; radius: 0.15; radiusTubular: 0.02");
-          trailEl.setAttribute("material", "color: #00ffff; emissive: #00ffff; emissiveIntensity: 2.0; transparent: true; opacity: 0.8");
-          trailEl.setAttribute("scale", "1 1 0.2");
-          trailEl.setAttribute("visible", "false");
-          this.el.appendChild(trailEl);
-          this.trail = trailEl;
-          
-          // Create direction arrow
-          const arrowEl = document.createElement("a-entity");
-          arrowEl.setAttribute("geometry", "primitive: cone; radiusBottom: 0.1; radiusTop: 0; height: 0.4");
-          arrowEl.setAttribute("material", "color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 2.0");
-          arrowEl.setAttribute("position", "0 0 -0.3");
-          arrowEl.setAttribute("rotation", "90 0 0");
-          arrowEl.setAttribute("visible", "false");
-          this.el.appendChild(arrowEl);
-          this.arrow = arrowEl;
-          
-          // Add pulsing glow sphere at palm
-          const glowEl = document.createElement("a-entity");
-          glowEl.setAttribute("geometry", "primitive: sphere; radius: 0.08");
-          glowEl.setAttribute("material", "color: #ffffff; emissive: #00ffff; emissiveIntensity: 1.5; transparent: true; opacity: 0.9");
-          glowEl.setAttribute("position", "0 0 0.05");
-          glowEl.setAttribute("animation__pulse", "property: scale; from: 0.8 0.8 0.8; to: 1.2 1.2 1.2; dir: alternate; dur: 300; loop: true");
-          this.el.appendChild(glowEl);
-          this.glow = glowEl;
-        },
-        
-        tick: function () {
-          if (!this.rig) return;
-          
-          // Check if hand is in locomotion pose (simplified - in real implementation, 
-          // this would use hand tracking data to detect pose)
-          // For demonstration, we'll use a timer to simulate
-          const handPose = this.el.components['hand-tracking-controls'];
-          if (handPose) {
-            // This is a simplified check - actual pose detection would be more complex
-            const isPointing = Math.random() > 0.5; // Placeholder
-            
-            if (isPointing) {
-              this.isMoving = true;
-              this.showVisualFeedback();
-              
-              // Update trail position with offset
-              if (this.trail) {
-                this.trail.setAttribute("visible", "true");
-                this.trail.setAttribute("position", "0 0 -0.2");
-                this.trail.setAttribute("animation__rotate", "property: rotation; to: 0 360 0; dur: 1000; loop: true");
-              }
-              
-              if (this.arrow) {
-                this.arrow.setAttribute("visible", "true");
-                this.arrow.setAttribute("material", "emissiveIntensity", 2.0 + Math.sin(Date.now() * 0.01) * 0.5);
-              }
-              
-              if (this.glow) {
-                this.glow.setAttribute("material", "emissive", "#ff00ff");
-              }
-            } else {
-              this.isMoving = false;
-              this.hideVisualFeedback();
-            }
-          }
-        },
-        
-        showVisualFeedback: function () {
-          // Visuals are shown in tick, but we can add particle effects here
-          if (this.trail) {
-            this.trail.setAttribute("visible", "true");
-          }
-          if (this.arrow) {
-            this.arrow.setAttribute("visible", "true");
-          }
-        },
-        
-        hideVisualFeedback: function () {
-          if (this.trail) {
-            this.trail.setAttribute("visible", "false");
-          }
-          if (this.arrow) {
-            this.arrow.setAttribute("visible", "false");
-          }
-          if (this.glow) {
-            this.glow.setAttribute("material", "emissive", "#00ffff");
-          }
-        }
-      });
-
-      /* NEW: Velocity indicator for speed feedback */
-      AFRAME.registerComponent("velocity-indicator", {
-        init: function () {
-          this.rig = document.getElementById("rig");
-          this.createIndicator();
-        },
-        
-        createIndicator: function () {
-          const indicator = document.createElement("a-entity");
-          indicator.setAttribute("position", "0 -0.5 -1");
-          indicator.setAttribute("visible", "false");
-          this.indicator = indicator;
-          this.el.appendChild(indicator);
-          
-          // Speed bar
-          const bar = document.createElement("a-box");
-          bar.setAttribute("width", "0.1");
-          bar.setAttribute("height", "0.02");
-          bar.setAttribute("depth", "0.5");
-          bar.setAttribute("material", "color: #00ffff; emissive: #00ffff; emissiveIntensity: 1.5");
-          bar.setAttribute("position", "0 0 0");
-          indicator.appendChild(bar);
-          
-          // Fill bar (changes size based on speed)
-          const fill = document.createElement("a-box");
-          fill.setAttribute("width", "0.12");
-          fill.setAttribute("height", "0.04");
-          fill.setAttribute("depth", "0.5");
-          fill.setAttribute("material", "color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 2.0");
-          fill.setAttribute("position", "0 0 0");
-          fill.setAttribute("scale", "1 1 0");
-          indicator.appendChild(fill);
-          this.fill = fill;
-          
-          // Text label
-          const text = document.createElement("a-entity");
-          text.setAttribute("text", "value: LOCOMOTION ACTIVE; align: center; color: #ffffff; width: 2");
-          text.setAttribute("position", "0 0.1 0");
-          text.setAttribute("scale", "0.5 0.5 0.5");
-          indicator.appendChild(text);
-        },
-        
-        tick: function () {
-          if (!this.rig || !this.fill) return;
-          
-          const velocity = this.rig.components['movement-controls']?.velocity;
-          if (velocity && (Math.abs(velocity.x) > 0.01 || Math.abs(velocity.z) > 0.01)) {
-            this.indicator.setAttribute("visible", "true");
-            
-            // Calculate speed factor (0-1)
-            const speed = Math.sqrt(velocity.x*velocity.x + velocity.z*velocity.z) / 1.6; // max speed 1.6
-            this.fill.setAttribute("scale", `1 1 ${Math.min(speed, 1)}`);
-            
-            // Color based on speed
-            const hue = 0.3 + speed * 0.3; // cyan to magenta
-            this.fill.setAttribute("material", "color", `hsl(${hue * 360}, 100%, 50%)`);
-          } else {
-            this.indicator.setAttribute("visible", "false");
-          }
-        }
-      });
-
-      /* NEW: Ground marker for destination preview */
-      AFRAME.registerComponent("destination-marker", {
-        init: function () {
-          this.rig = document.getElementById("rig");
-          this.marker = null;
-          this.createMarker();
-        },
-        
-        createMarker: function () {
-          const marker = document.createElement("a-entity");
-          marker.setAttribute("geometry", "primitive: ring; radiusInner: 0.5; radiusOuter: 0.7");
-          marker.setAttribute("material", "color: #00ffff; emissive: #00ffff; emissiveIntensity: 2.0; transparent: true; opacity: 0.8");
-          marker.setAttribute("rotation", "-90 0 0");
-          marker.setAttribute("position", "0 0.01 0");
-          marker.setAttribute("visible", "false");
-          marker.setAttribute("animation__pulse", "property: scale; from: 0.8 0.8 0.8; to: 1.2 1.2 1.2; dir: alternate; dur: 500; loop: true");
-          this.el.sceneEl.appendChild(marker);
-          this.marker = marker;
-        },
-        
-        tick: function () {
-          if (!this.rig || !this.marker) return;
-          
-          const leftHand = document.querySelector("[hand-tracking-controls='hand: left']");
-          if (!leftHand) return;
-          
-          const handPose = leftHand.components['hand-tracking-controls'];
-          const isMoving = this.rig.components['movement-controls']?.velocity?.length() > 0.01;
-          
-          if (isMoving && handPose) {
-            // Get hand direction and project to ground
-            const handPos = leftHand.object3D.position;
-            const handDir = new THREE.Vector3(0, 0, -1);
-            handDir.applyQuaternion(leftHand.object3D.quaternion);
-            
-            // Project to ground plane (y=0)
-            if (handDir.y < 0) {
-              const t = -handPos.y / handDir.y;
-              const groundPos = new THREE.Vector3(
-                handPos.x + handDir.x * t,
-                0,
-                handPos.z + handDir.z * t
-              );
-              
-              this.marker.setAttribute("position", groundPos);
-              this.marker.setAttribute("visible", "true");
-              
-              // Distance indicator
-              const distance = groundPos.distanceTo(this.rig.object3D.position);
-              this.marker.setAttribute("scale", `${Math.min(distance/2, 2)} ${Math.min(distance/2, 2)} ${Math.min(distance/2, 2)}`);
-            } else {
-              this.marker.setAttribute("visible", "false");
-            }
-          } else {
-            this.marker.setAttribute("visible", "false");
-          }
-        }
-      });
-    </script>
   </head>
 
   <body>
     <a-scene
       renderer="antialias: true; physicallyCorrectLights: true; colorManagement: true"
-      background="color: #070816"
-      fog="type: exponential; color: #0b0a1c; density: 0.012"
-      vr-mode-ui="enabled: true"
-      tracked-controls-webxr="handTracking: true"
+      background="color: #0a0c20"
+      fog="type: exponential; color: #0a0b1a; density: 0.015"
+      xr-mode-ui="enabled: true"
+      hand-tracking="enabled: true;"
     >
-      <!-- Sky + global ambient / directional lighting -->
-      <a-sky color="#0a0b22"></a-sky>
+      <!-- Assets and mixins -->
+      <a-assets>
+        <!-- teleport mixin for laser based movement (optional, but we keep for gamepad fallback) -->
+        <a-mixin id="teleport-laser" teleport-controls="cameraRig: #rig; teleportOrigin: #camera; button: trigger; curveShootingSpeed: 18; landingMaxAngle: 60"></a-mixin>
+        <!-- custom hand pinch turn logic (component defined below) -->
+      </a-assets>
 
-      <a-entity light="type: ambient; intensity: 0.55; color: #9aa8ff"></a-entity>
-      <a-entity light="type: directional; intensity: 0.6; color: #cfd6ff" position="2 8 4"></a-entity>
-      <a-entity light="type: directional; intensity: 0.35; color: #ff7bda" position="-4 6 -8"></a-entity>
+      <!-- sky and lights -->
+      <a-sky color="#0e0f28"></a-sky>
+      <a-entity light="type: ambient; intensity: 0.7; color: #b8c4ff"></a-entity>
+      <a-entity light="type: directional; intensity: 0.8; color: #ffe5b0" position="5 12 8"></a-entity>
 
-      <!-- Stylized depth walls (same as before) -->
-      <a-box position="-13 3 -30" width="1" height="8" depth="80" material="color: #060616; metalness: 0.2; roughness: 0.9"></a-box>
-      <a-box position="13 3 -30" width="1" height="8" depth="80" material="color: #060616; metalness: 0.2; roughness: 0.9"></a-box>
-      <a-box position="-12.4 3 -30" width="0.12" height="8" depth="80" material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"></a-box>
-      <a-box position="12.4 3 -30" width="0.12" height="8" depth="80" material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 0.9; opacity: 0.35; transparent: true"></a-box>
-
-      <!-- ENHANCED PLAYER RIG with prominent hand tracking -->
-      <a-entity
-        id="rig"
+      <!-- Main rig: movement-controls provides locomotion (thumbstick) + we add custom pinch turn -->
+      <a-entity 
+        id="rig" 
+        movement-controls="controls: hand, gamepad, keyboard; speed: 0.4"
         position="0 0 0"
-        movement-controls="speed: 2.2; fly: false; controls: hand; hand: left; acceleration: 15"
-      >
-        <a-entity
-          id="camera"
-          camera
-          position="0 1.6 0"
-          look-controls="pointerLockEnabled: false"
-        ></a-entity>
+        pinch-turn__left
+        pinch-turn__right>
 
-        <!-- LEFT HAND - PRIMARY LOCOMOTION with enhanced visuals -->
-        <a-entity 
-          hand-tracking-controls="hand: left; modelColor: #ff00ff; modelOpacity: 0.9"
-          hand-locomotion-enhancer="hand: left"
-          velocity-indicator
-        >
-          <!-- Additional visual flair for left hand -->
-          <a-entity 
-            geometry="primitive: torus; radius: 0.2; radiusTubular: 0.01"
-            material="color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 2.0; transparent: true; opacity: 0.6"
-            position="0 0 -0.1"
-            rotation="90 0 0"
-            animation__spin="property: rotation; to: 90 360 0; dur: 2000; loop: true"
-          ></a-entity>
+        <!-- Camera (player view) -->
+        <a-entity id="camera" camera position="0 1.6 0" look-controls="pointerLockEnabled: false"></a-entity>
+
+        <!-- Hand entities: hand-tracking + laser for teleport fallback (optional) -->
+        <a-entity id="leftHand"
+          hand-tracking-controls="hand: left; modelColor: #ffaa66;"
+          laser-controls="hand: left"
+          mixin="teleport-laser"
+          raycaster="showLine: true; far: 20; lineOpacity: 0.4; objects: .floor, .teleport-surface">
         </a-entity>
 
-        <!-- RIGHT HAND - SECONDARY with complementary visuals -->
-        <a-entity 
-          hand-tracking-controls="hand: right; modelColor: #00ffff; modelOpacity: 0.9"
-        >
-          <a-entity 
-            geometry="primitive: sphere; radius: 0.1"
-            material="color: #00ffff; emissive: #00ffff; emissiveIntensity: 1.5; transparent: true; opacity: 0.5"
-            position="0 0 0"
-            animation__pulse="property: scale; from: 0.8 0.8 0.8; to: 1.4 1.4 1.4; dir: alternate; dur: 800; loop: true"
-          ></a-entity>
+        <a-entity id="rightHand"
+          hand-tracking-controls="hand: right; modelColor: #66aaff;"
+          laser-controls="hand: right"
+          mixin="teleport-laser"
+          raycaster="showLine: true; far: 20; lineOpacity: 0.4; objects: .floor, .teleport-surface">
         </a-entity>
 
-        <!-- Keep laser controls as fallback but hand tracking takes priority -->
-        <a-entity laser-controls="hand: left"></a-entity>
-        <a-entity laser-controls="hand: right"></a-entity>
+        <!-- Left-hand pinch turn logic (custom component) -->
+        <a-entity id="pinchLeftDetector" hand-tracking-controls="hand: left" visible="false"
+          pinch-turn__left="hand: left; turnSpeed: 45;"></a-entity>
+        <!-- Right-hand pinch turn logic -->
+        <a-entity id="pinchRightDetector" hand-tracking-controls="hand: right" visible="false"
+          pinch-turn__right="hand: right; turnSpeed: 45;"></a-entity>
       </a-entity>
 
-      <!-- Destination preview marker (shows where you're heading) -->
-      <a-entity destination-marker></a-entity>
+      <!-- ========== THE PATH / CONCERT ARENA ========== -->
+      <!-- Ground with path markers and glowing edges to guide way -->
+      <a-entity position="0 -0.1 -20">
+        <!-- main floor (semi transparent) -->
+        <a-box width="50" height="0.2" depth="120" material="color: #101225; roughness: 0.8; metalness: 0.1; transparent: true; opacity: 0.7;" position="0 0 0"></a-box>
 
-      <!-- LED canopy -->
-      <a-entity
-        geometry="primitive: cylinder; radius: 18; height: 80; openEnded: true; thetaStart: 0; thetaLength: 180"
-        rotation="90 0 90"
-        position="0 9 -30"
-        material="shader: psychedelic-canopy; side: double"
-      ></a-entity>
+        <!-- the actual pathway: glowing stripes and arrows -->
+        <a-entity position="0 0.2 0">
+          <!-- central line (glowing) -->
+          <a-cylinder radius="0.4" height="0.1" segments-radial="16" color="#ff88ff" position="0 0 -40" material="emissive: #ff44aa; emissiveIntensity: 1.2"></a-cylinder>
+          <a-cylinder radius="0.4" height="0.1" segments-radial="16" color="#88aaff" position="0 0 -20" material="emissive: #4488ff; emissiveIntensity: 1.2"></a-cylinder>
+          <a-cylinder radius="0.4" height="0.1" segments-radial="16" color="#88ffaa" position="0 0 0" material="emissive: #44ff88; emissiveIntensity: 1.2"></a-cylinder>
+          <a-cylinder radius="0.4" height="0.1" segments-radial="16" color="#ffaa88" position="0 0 20" material="emissive: #ff8844; emissiveIntensity: 1.2"></a-cylinder>
+          <a-cylinder radius="0.4" height="0.1" segments-radial="16" color="#ff88ff" position="0 0 40" material="emissive: #ff44aa; emissiveIntensity: 1.2"></a-cylinder>
 
-      <!-- Ground -->
-      <a-box position="0 -0.05 -30" width="40" height="0.1" depth="80" material="color: #06061a; roughness: 0.95; metalness: 0.05"></a-box>
+          <!-- direction arrows (multiple along path) to show "the way" -->
+          <a-entity position="-1.2 0.1 -30" rotation="0 90 0">
+            <a-cone radius-bottom="1" radius-top="0" height="2" color="#ffaa33" material="emissive: #ffaa33; emissiveIntensity: 1.0"></a-cone>
+            <a-box position="0 1.2 0" width="1.2" height="1.2" depth="3" color="#ffaa33" material="emissive: #ffaa33; emissiveIntensity: 1.0"></a-box>
+          </a-entity>
+          <a-entity position="1.2 0.1 -10" rotation="0 90 0">
+            <a-cone radius-bottom="1" radius-top="0" height="2" color="#33aaff" material="emissive: #33aaff; emissiveIntensity: 1.0"></a-cone>
+            <a-box position="0 1.2 0" width="1.2" height="1.2" depth="3" color="#33aaff" material="emissive: #33aaff; emissiveIntensity: 1.0"></a-box>
+          </a-entity>
+          <a-entity position="-1.2 0.1 10" rotation="0 90 0">
+            <a-cone radius-bottom="1" radius-top="0" height="2" color="#ff66aa" material="emissive: #ff66aa; emissiveIntensity: 1.0"></a-cone>
+            <a-box position="0 1.2 0" width="1.2" height="1.2" depth="3" color="#ff66aa" material="emissive: #ff66aa; emissiveIntensity: 1.0"></a-box>
+          </a-entity>
+          <a-entity position="1.2 0.1 30" rotation="0 90 0">
+            <a-cone radius-bottom="1" radius-top="0" height="2" color="#88ff88" material="emissive: #88ff88; emissiveIntensity: 1.0"></a-cone>
+            <a-box position="0 1.2 0" width="1.2" height="1.2" depth="3" color="#88ff88" material="emissive: #88ff88; emissiveIntensity: 1.0"></a-box>
+          </a-entity>
 
-      <!-- Glowing pathway (enhanced) -->
-      <a-box position="0 0.03 -30" width="5" height="0.06" depth="80" material="color: #031a24; emissive: #00d4ff; emissiveIntensity: 1.5; opacity: 0.9; transparent: true; roughness: 0.25; metalness: 0.1" animation__pulse="property: material.emissiveIntensity; from: 0.8; to: 2.2; dir: alternate; dur: 1200; loop: true"></a-box>
-      <a-box position="-2.62 0.035 -30" width="0.18" height="0.07" depth="80" material="color: #00ffff; emissive: #00ffff; emissiveIntensity: 2.0; opacity: 0.95; transparent: true" animation__edge="property: material.opacity; from: 0.5; to: 1.0; dir: alternate; dur: 1000; loop: true"></a-box>
-      <a-box position="2.62 0.035 -30" width="0.18" height="0.07" depth="80" material="color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 2.0; opacity: 0.95; transparent: true" animation__edge="property: material.opacity; from: 0.5; to: 1.0; dir: alternate; dur: 1100; loop: true"></a-box>
-
-      <!-- ZONE 1: GRAND TOMORROWLAND ENTRANCE GATE (same as before) -->
-      <a-entity position="0 0 0">
-        <a-entity light="type: point; intensity: 2.4; distance: 22; decay: 1.6; color: #ffd2a1" position="0 6 -6"></a-entity>
-        <a-entity light="type: point; intensity: 1.4; distance: 18; decay: 1.5; color: #7af7ff" position="-4 4 -6"></a-entity>
-        <a-entity light="type: point; intensity: 1.4; distance: 18; decay: 1.5; color: #ff4be1" position="4 4 -6"></a-entity>
-        <a-box position="0 0.12 -5.5" width="10" height="0.24" depth="4" material="color: #07071a; metalness: 0.3; roughness: 0.85"></a-box>
-        <a-box position="0 0.28 -5.7" width="8" height="0.18" depth="3" material="color: #090926; metalness: 0.35; roughness: 0.75"></a-box>
-        
-        <!-- Left pylon -->
-        <a-entity position="-4.2 0 -6">
-          <a-cylinder position="0 2 0" radius="0.55" height="4" material="color: #071022; emissive: #00eaff; emissiveIntensity: 0.8; metalness: 0.9; roughness: 0.2"></a-cylinder>
-          <a-torus position="0 4.4 0" radius="1.05" radius-tubular="0.08" rotation="90 0 0" material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.6; opacity: 0.9; transparent: true" animation__spin="property: rotation; to: 90 0 360; dur: 9000; easing: linear; loop: true"></a-torus>
-          <a-icosahedron position="0 5.3 0" radius="0.55" material="color: #0b0420; emissive: #ff2bd6; emissiveIntensity: 0.9; metalness: 0.7; roughness: 0.25"></a-icosahedron>
-        </a-entity>
-        
-        <!-- Right pylon -->
-        <a-entity position="4.2 0 -6">
-          <a-cylinder position="0 2 0" radius="0.55" height="4" material="color: #071022; emissive: #ff2bd6; emissiveIntensity: 0.8; metalness: 0.9; roughness: 0.2"></a-cylinder>
-          <a-torus position="0 4.4 0" radius="1.05" radius-tubular="0.08" rotation="90 0 0" material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.6; opacity: 0.9; transparent: true" animation__spin="property: rotation; to: 90 0 360; dur: 9500; easing: linear; loop: true"></a-torus>
-          <a-icosahedron position="0 5.3 0" radius="0.55" material="color: #061226; emissive: #00eaff; emissiveIntensity: 0.9; metalness: 0.7; roughness: 0.25"></a-icosahedron>
-        </a-entity>
-
-        <!-- Portal arches -->
-        <a-torus position="0 3.6 -6.2" radius="4.6" radius-tubular="0.18" material="color: #09091f; emissive: #2b2fff; emissiveIntensity: 0.5; metalness: 0.8; roughness: 0.25"></a-torus>
-        <a-torus position="0 3.6 -6.2" radius="4.2" radius-tubular="0.1" material="color: #00eaff; emissive: #00eaff; emissiveIntensity: 1.7; opacity: 0.9; transparent: true" animation__glow="property: material.emissiveIntensity; from: 0.8; to: 2.2; dir: alternate; dur: 1400; loop: true"></a-torus>
-        <a-torus position="0 3.6 -6.2" radius="3.7" radius-tubular="0.1" material="color: #ff2bd6; emissive: #ff2bd6; emissiveIntensity: 1.5; opacity: 0.85; transparent: true" animation__glow="property: material.emissiveIntensity; from: 0.7; to: 2.0; dir: alternate; dur: 1600; loop: true"></a-torus>
-
-        <!-- TOMORROWLAND 3D text -->
-        <a-entity position="0 6.3 -6.2" rotation="0 0 0" float-yoyo="amplitude: 0.12; speed: 0.9" text-geometry="value: TOMORROWLAND; font: https://cdn.jsdelivr.net/gh/mrdoob/three.js@r152/examples/fonts/helvetiker_bold.typeface.json; size: 0.85; height: 0.18; bevelEnabled: true; bevelSize: 0.02; bevelThickness: 0.02; bevelSegments: 2; curveSegments: 8" material="color: #ffffff; emissive: #00eaff; emissiveIntensity: 1.9; metalness: 0.85; roughness: 0.18"></a-entity>
-      </a-entity>
-
-      <!-- ZONE 2: TICKET BOOKING (enhanced lights) -->
-      <a-entity position="0 0 -18">
-        <a-entity light="type: point; intensity: 2.2; distance: 18; decay: 1.2; color: #88ddff" position="0 5 0"></a-entity>
-        <a-box position="0 1 0" width="8" height="2" depth="3" material="color: #050815; metalness: 0.6; roughness: 0.25"></a-box>
-        <a-box position="0 1.2 1.6" width="6.5" height="0.5" depth="0.4" material="color: #0a0f2a; emissive: #3366ff; emissiveIntensity: 1.0; metalness: 0.7"></a-box>
-        
-        <!-- Ticket windows -->
-        <a-box position="-2 1.4 1.52" width="1.6" height="0.9" depth="0.06" material="color: #001b2f; emissive: #00c6ff; emissiveIntensity: 1.5; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1" animation__flicker="property: material.emissiveIntensity; from: 0.8; to: 2.0; dir: alternate; dur: 900; loop: true"></a-box>
-        <a-box position="0 1.4 1.52" width="1.6" height="0.9" depth="0.06" material="color: #001b2f; emissive: #00ffea; emissiveIntensity: 1.5; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1" animation__flicker="property: material.emissiveIntensity; from: 0.8; to: 2.0; dir: alternate; dur: 1100; loop: true"></a-box>
-        <a-box position="2 1.4 1.52" width="1.6" height="0.9" depth="0.06" material="color: #001b2f; emissive: #4dffb8; emissiveIntensity: 1.5; transparent: true; opacity: 0.9; roughness: 0.2; metalness: 0.1" animation__flicker="property: material.emissiveIntensity; from: 0.8; to: 2.0; dir: alternate; dur: 1000; loop: true"></a-box>
-
-        <!-- Zone 2 label -->
-        <a-entity position="0 3 0.1" float-yoyo="amplitude: 0.2; speed: 1.0">
-          <a-box width="5" height="0.7" depth="0.08" material="color: #040612; emissive: #040612; opacity: 0.96"></a-box>
-          <a-entity text="value: ZONE 2 · TICKET BOOKING; align: center; color: #b0f3ff; width: 7; letterSpacing: 4" position="0 0 0.06"></a-entity>
+          <!-- floating orbs to mark path edges (visual interest) -->
+          <a-sphere radius="0.3" color="#ff99ff" material="emissive: #ff00ff; emissiveIntensity: 1.5" position="-2 1.2 -40"></a-sphere>
+          <a-sphere radius="0.3" color="#99ffff" material="emissive: #00ffff; emissiveIntensity: 1.5" position="2 1.2 -40"></a-sphere>
+          <a-sphere radius="0.3" color="#ffff99" material="emissive: #ffff00; emissiveIntensity: 1.5" position="-2 1.2 -20"></a-sphere>
+          <a-sphere radius="0.3" color="#ffaa88" material="emissive: #ff8800; emissiveIntensity: 1.5" position="2 1.2 -20"></a-sphere>
+          <a-sphere radius="0.3" color="#88ffaa" material="emissive: #44ff88; emissiveIntensity: 1.5" position="-2 1.2 0"></a-sphere>
+          <a-sphere radius="0.3" color="#aa88ff" material="emissive: #8844ff; emissiveIntensity: 1.5" position="2 1.2 0"></a-sphere>
+          <a-sphere radius="0.3" color="#ff88aa" material="emissive: #ff44aa; emissiveIntensity: 1.5" position="-2 1.2 20"></a-sphere>
+          <a-sphere radius="0.3" color="#88aaff" material="emissive: #4488ff; emissiveIntensity: 1.5" position="2 1.2 20"></a-sphere>
+          <a-sphere radius="0.3" color="#aaff88" material="emissive: #88ff44; emissiveIntensity: 1.5" position="-2 1.2 40"></a-sphere>
+          <a-sphere radius="0.3" color="#ff88ff" material="emissive: #ff44ff; emissiveIntensity: 1.5" position="2 1.2 40"></a-sphere>
         </a-entity>
       </a-entity>
 
-      <!-- ZONE 3: WRISTBAND STATION + PHOTOBOOTH (enhanced) -->
-      <a-entity position="0 0 -36">
-        <a-entity light="type: point; intensity: 2.5; distance: 18; decay: 1.4; color: #ff66ff" position="0 5 0"></a-entity>
-        <a-box position="0 0.5 0" width="9" height="1" depth="4" material="color: #060615; metalness: 0.4; roughness: 0.35"></a-box>
-        
-        <!-- Wristband trays -->
-        <a-cylinder position="-2 1.1
+      <!-- arena / concert decorations (trees, arches) to give sense of place -->
+      <a-entity position="-6 0 -15">
+        <a-cone radius-bottom="2" radius-top="0.1" height="6" color="#301010" position="0 3 0"></a-cone>
+        <a-sphere radius="1.8" color="#33aa33" material="emissive: #226622; emissiveIntensity: 0.4" position="0 6 0"></a-sphere>
+      </a-entity>
+      <a-entity position="6 0 -15">
+        <a-cone radius-bottom="2" radius-top="0.1" height="6" color="#301010" position="0 3 0"></a-cone>
+        <a-sphere radius="1.8" color="#33aa33" material="emissive: #226622; emissiveIntensity: 0.4" position="0 6 0"></a-sphere>
+      </a-entity>
+
+      <!-- arches along path -->
+      <a-entity position="-4 0 -30">
+        <a-ring radius-inner="1.5" radius-outer="1.7" color="#aa88ff" material="emissive: #8844ff; emissiveIntensity: 0.8" rotation="90 0 0"></a-ring>
+        <a-ring radius-inner="1.5" radius-outer="1.7" color="#aa88ff" material="emissive: #8844ff; emissiveIntensity: 0.8" rotation="90 0 0" position="0 3 0"></a-ring>
+        <a-box width="0.3" height="6" depth="0.3" color="#ccaaff" position="-1.5 3 0"></a-box>
+        <a-box width="0.3" height="6" depth="0.3" color="#ccaaff" position="1.5 3 0"></a-box>
+      </a-entity>
+
+      <!-- STAGE in the distance (to look toward) -->
+      <a-entity position="0 2 80" scale="4 4 4">
+        <a-box width="4" height="0.8" depth="2" color="#222244" position="0 -0.4 0"></a-box>
+        <a-box width="3" height="3" depth="0.5" color="#333366" position="0 1 0.5"></a-box>
+        <a-torus radius="1" radius-tubular="0.1" color="#ff88ff" material="emissive: #ff00ff" position="0 2.5 0.5"></a-torus>
+        <a-light type="point" intensity="2" color="#ff44aa" position="0 3 0.5"></a-light>
+      </a-entity>
+
+      <!-- floor class for teleport surfaces -->
+      <a-box class="floor" visible="false" position="0 -0.2 -20" width="60" height="0.1" depth="140"></a-box>
+      <a-box class="teleport-surface" visible="false" position="0 -0.2 -20" width="60" height="0.1" depth="140"></a-box>
+    </a-scene>
+
+    <!-- ========== CUSTOM PINCH TURN COMPONENT ========== 
+         Listens to pinchstart on specified hand and rotates the rig by turnSpeed degrees.
+         Uses hand-tracking events from the hand entity. -->
+    <script>
+      AFRAME.registerComponent('pinch-turn', {
+        schema: {
+          hand: { type: 'string', default: 'left' },   // left or right
+          turnSpeed: { type: 'number', default: 45 }    // degrees per pinch
+        },
+
+        init: function () {
+          this.handEl = null;
+          this.boundOnPinchStart = this.onPinchStart.bind(this);
+          this.boundOnPinchEnd = this.onPinchEnd.bind(this); // not used but nice to have
+          this.pinching = false;
+        },
+
+        play: function () {
+          // Find the actual hand entity (the one with hand-tracking-controls for our target hand)
+          const hand = this.data.hand;
+          // We look for any entity with hand-tracking-controls and attribute hand=left/right
+          const handEntities = document.querySelectorAll('[hand-tracking-controls]');
+          for (let el of handEntities) {
+            const controls = el.components['hand-tracking-controls'];
+            if (controls && controls.data && controls.data.hand === hand) {
+              this.handEl = el;
+              break;
+            }
+          }
+
+          if (this.handEl) {
+            this.handEl.addEventListener('pinchstart', this.boundOnPinchStart);
+            this.handEl.addEventListener('pinchend', this.boundOnPinchEnd);
+          } else {
+            console.warn(`pinch-turn: no hand-tracking entity found for hand ${hand}`);
+          }
+        },
+
+        pause: function () {
+          if (this.handEl) {
+            this.handEl.removeEventListener('pinchstart', this.boundOnPinchStart);
+            this.handEl.removeEventListener('pinchend', this.boundOnPinchEnd);
+          }
+        },
+
+        onPinchStart: function (evt) {
+          if (this.pinching) return; // avoid multiple triggers
+          this.pinching = true;
+
+          // Find the rig (parent of camera)
+          const rig = document.getElementById('rig');
+          if (!rig) return;
+
+          // Get current rotation (yaw) and add turn (left = positive, right = negative? depends on hand)
+          let currentRot = rig.object3D.rotation.y;
+          let turnDeg = this.data.turnSpeed;
+          // For left hand: turn left (positive Y rotation) ; for right hand: turn right (negative)
+          if (this.data.hand === 'right') {
+            turnDeg = -turnDeg;
+          }
+          const turnRad = THREE.MathUtils.degToRad(turnDeg);
+          const newYaw = currentRot + turnRad;
+
+          // Apply rotation (preserve x and z rotation = 0)
+          rig.object3D.rotation.y = newYaw;
+
+          // Optional: slight haptic feedback if available (for Quest)
+          if (this.handEl && this.handEl.components['hand-tracking-controls']) {
+            const handModel = this.handEl.components['hand-tracking-controls'];
+            if (handModel && handModel.haptic) {
+              handModel.haptic(0.2, 50);
+            } else {
+              // fallback pulse via gamepad if available (not guaranteed but try)
+              try {
+                const gamepads = navigator.getGamepads();
+                const handIndex = this.data.hand === 'left' ? 0 : 1;
+                if (gamepads[handIndex] && gamepads[handIndex].hapticActuators) {
+                  gamepads[handIndex].hapticActuators[0].pulse(0.5, 50);
+                }
+              } catch (e) {}
+            }
+          }
+
+          // Reset pinching flag after short delay to avoid repeated turns from same pinch hold
+          // But we also listen to pinchend to reset earlier.
+          setTimeout(() => { this.pinching = false; }, 300);
+        },
+
+        onPinchEnd: function () {
+          this.pinching = false;
+        }
+      });
+
+      // Register two instances: left and right (could also just use one with different data)
+      AFRAME.registerComponent('pinch-turn__left', {
+        schema: {
+          hand: { default: 'left' },
+          turnSpeed: { default: 45 }
+        },
+        init: function () {
+          this.handEl = null;
+          this.boundOnPinchStart = this.onPinchStart.bind(this);
+          this.boundOnPinchEnd = this.onPinchEnd.bind(this);
+          this.pinching = false;
+        },
+        play: function () {
+          const handEntities = document.querySelectorAll('[hand-tracking-controls]');
+          for (let el of handEntities) {
+            const controls = el.components['hand-tracking-controls'];
+            if (controls && controls.data && controls.data.hand === 'left') {
+              this.handEl = el;
+              break;
+            }
+          }
+          if (this.handEl) {
+            this.handEl.addEventListener('pinchstart', this.boundOnPinchStart);
+            this.handEl.addEventListener('pinchend', this.boundOnPinchEnd);
+          }
+        },
+        pause: function () {
+          if (this.handEl) {
+            this.handEl.removeEventListener('pinchstart', this.boundOnPinchStart);
+            this.handEl.removeEventListener('pinchend', this.boundOnPinchEnd);
+          }
+        },
+        onPinchStart: function () {
+          if (this.pinching) return;
+          this.pinching = true;
+          const rig = document.getElementById('rig');
+          if (rig) {
+            let currentRot = rig.object3D.rotation.y;
+            const turnRad = THREE.MathUtils.degToRad(45); // left turn positive
+            rig.object3D.rotation.y = currentRot + turnRad;
+          }
+          setTimeout(() => { this.pinching = false; }, 300);
+        },
+        onPinchEnd: function () { this.pinching = false; }
+      });
+
+      AFRAME.registerComponent('pinch-turn__right', {
+        schema: {
+          hand: { default: 'right' },
+          turnSpeed: { default: 45 }
+        },
+        init: function () {
+          this.handEl = null;
+          this.boundOnPinchStart = this.onPinchStart.bind(this);
+          this.boundOnPinchEnd = this.onPinchEnd.bind(this);
+          this.pinching = false;
+        },
+        play: function () {
+          const handEntities = document.querySelectorAll('[hand-tracking-controls]');
+          for (let el of handEntities) {
+            const controls = el.components['hand-tracking-controls'];
+            if (controls && controls.data && controls.data.hand === 'right') {
+              this.handEl = el;
+              break;
+            }
+          }
+          if (this.handEl) {
+            this.handEl.addEventListener('pinchstart', this.boundOnPinchStart);
+            this.handEl.addEventListener('pinchend', this.boundOnPinchEnd);
+          }
+        },
+        pause: function () {
+          if (this.handEl) {
+            this.handEl.removeEventListener('pinchstart', this.boundOnPinchStart);
+            this.handEl.removeEventListener('pinchend', this.boundOnPinchEnd);
+          }
+        },
+        onPinchStart: function () {
+          if (this.pinching) return;
+          this.pinching = true;
+          const rig = document.getElementById('rig');
+          if (rig) {
+            let currentRot = rig.object3D.rotation.y;
+            const turnRad = THREE.MathUtils.degToRad(-45); // right turn negative
+            rig.object3D.rotation.y = currentRot + turnRad;
+          }
+          setTimeout(() => { this.pinching = false; }, 300);
+        },
+        onPinchEnd: function () { this.pinching = false; }
+      });
+    </script>
+
+    <!-- Optional: style to make hands more visible -->
+    <style>
+      .a-enter-vr, .a-enter-ar { z-index: 999; }
+    </style>
+  </body>
+</html>
