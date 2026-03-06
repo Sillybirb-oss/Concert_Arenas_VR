@@ -1,757 +1,291 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="utf-8" />
-  <title>Tomorrowland Path – Hand Gesture Locomotion (Quest 3)</title>
+  <meta charset="utf-8">
+  <title>Operator's VR Pawn Explorer</title>
+  <!-- A-Frame 1.5.0 is required for stable WebXR hand tracking on Quest 3 -->
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.4.0/dist/aframe-extras.min.js"></script>
+  <!-- Environment component -->
+  <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
+  <script>
+    // Component to make platforms and objects float up and down
+    AFRAME.registerComponent('oscillate', {
+      schema: {
+        speed: {type: 'number', default: 1},
+        amount: {type: 'number', default: 0.5},
+        offset: {type: 'number', default: 0}
+      },
+      init: function() { 
+        this.baseY = this.el.object3D.position.y; 
+      },
+      tick: function(time) {
+        this.el.object3D.position.y = this.baseY + Math.sin(time / 1000 * this.data.speed + this.data.offset) * this.data.amount;
+      }
+    });
 
-  <style>
-    body { margin: 0; overflow: hidden; background: #000; font-family: monospace; }
+    // Operator's Direct Neural Link (VR Pawn Hand Locomotion)
+    AFRAME.registerComponent('pawn-locomotion', {
+      schema: {
+        rig: { type: 'selector', default: '#rig' },
+        head: { type: 'selector', default: '#head' },
+        hudState: { type: 'selector', default: '#hud-state' },
+        hudSpd: { type: 'selector', default: '#hud-spd' }
+      },
 
-    /* Gesture guide overlay */
-    #gesture-guide {
-      position: fixed;
-      bottom: 16px; left: 50%;
-      transform: translateX(-50%);
-      z-index: 999;
-      display: flex; gap: 8px;
-      pointer-events: none;
-    }
-    .g-card {
-      background: rgba(0,0,0,0.8);
-      border: 1px solid #333;
-      border-radius: 8px;
-      padding: 7px 12px;
-      text-align: center;
-      min-width: 80px;
-      transition: border-color 0.2s, background 0.2s;
-    }
-    .g-card.lit  { border-color: #ff00ff; background: rgba(255,0,255,0.18); }
-    .g-card .ic  { font-size: 1.4rem; line-height: 1; }
-    .g-card .lbl { font-size: 0.55rem; color: #777; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 3px; }
-    .g-card .act { font-size: 0.62rem; color: #00ffff; margin-top: 1px; }
+      init: function () {
+        // State machine: IDLE -> READY -> EXPLORING
+        this.state = 'IDLE';
+        
+        // Physics and tracking vectors
+        this.velocity = new THREE.Vector3(0, 0, 0);
+        this.anchorRight = new THREE.Vector3();
+        
+        // Camera direction vectors for head-relative movement
+        this.cameraForward = new THREE.Vector3();
+        this.cameraRight = new THREE.Vector3();
 
-    /* Active gesture banner */
-    #gest-banner {
-      position: fixed; top: 18px; left: 50%;
-      transform: translateX(-50%);
-      z-index: 999;
-      font-size: 1rem; letter-spacing: 0.3em;
-      color: #ff00ff; text-transform: uppercase;
-      text-shadow: 0 0 24px #ff00ff, 0 0 8px #fff;
-      opacity: 0; pointer-events: none;
-      transition: opacity 0.3s;
-    }
-    #gest-banner.show { opacity: 1; }
+        this.updateHUD('IDLE\nMake right fist to engage');
+      },
 
-    /* Fly VFX overlay */
-    #fly-vfx {
-      position: fixed; inset: 0; z-index: 8000;
-      pointer-events: none; opacity: 0;
-      transition: opacity 0.6s;
-    }
-    #fly-vfx.active {
-      opacity: 1;
-      animation: flyGlow 1.4s ease-in-out infinite;
-    }
-    @keyframes flyGlow {
-      0%,100% { background: radial-gradient(ellipse at 50% 100%, rgba(255,0,255,0.08) 0%, transparent 70%); }
-      50%      { background: radial-gradient(ellipse at 50% 100%, rgba(0,255,255,0.14) 0%, transparent 70%); }
-    }
+      updateHUD: function(text) {
+        if (this.data.hudState) {
+          this.data.hudState.setAttribute('value', text);
+          
+          if(this.state === 'IDLE') this.data.hudState.setAttribute('color', '#ff3333');
+          if(this.state === 'READY') this.data.hudState.setAttribute('color', '#ffaa00');
+          if(this.state === 'EXPLORING') this.data.hudState.setAttribute('color', '#00ffff');
+        }
+      },
 
-    /* Speed lines during fly */
-    #speedlines {
-      position: fixed; inset: 0; z-index: 7999;
-      pointer-events: none; opacity: 0;
-      background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 60px,
-        rgba(255,255,255,0.03) 61px
-      );
-      transition: opacity 0.4s;
-    }
-    #speedlines.active { opacity: 1; animation: streaks 0.25s linear infinite; }
-    @keyframes streaks { from { background-position: 0 0; } to { background-position: 0 80px; } }
+      tick: function (time, timeDelta) {
+        const dt = timeDelta / 1000; 
+        if (dt === 0) return;
 
-    .a-enter-vr, .a-enter-ar { z-index: 9999 !important; }
-  </style>
+        const sceneEl = this.el.sceneEl;
+        if (!sceneEl.is('vr-mode')) return; 
+
+        const frame = sceneEl.frame;
+        const renderer = sceneEl.renderer;
+        if (!frame || !renderer.xr.getSession()) return;
+
+        const session = renderer.xr.getSession();
+        const refSpace = renderer.xr.getReferenceSpace();
+
+        // Locate right hand source
+        let rightHandSource = null;
+        for (let source of session.inputSources) {
+          if (source.hand && source.handedness === 'right') {
+            rightHandSource = source;
+            break;
+          }
+        }
+
+        let trackingLost = true;
+        let rightWristPose, indexPose, pinkyPose;
+
+        if (rightHandSource) {
+          rightWristPose = frame.getJointPose(rightHandSource.hand.get('wrist'), refSpace);
+          indexPose = frame.getJointPose(rightHandSource.hand.get('index-finger-tip'), refSpace);
+          pinkyPose = frame.getJointPose(rightHandSource.hand.get('pinky-finger-tip'), refSpace);
+          
+          if (rightWristPose && indexPose && pinkyPose) {
+            trackingLost = false;
+          }
+        }
+
+        if (trackingLost) {
+          if (this.state === 'EXPLORING') {
+             this.state = 'IDLE';
+             this.updateHUD('TRACKING LOST\nMake fist to resume');
+          }
+        } else {
+          // --- GESTURE RECOGNITION (FIST MATH) ---
+          const dxI = rightWristPose.transform.position.x - indexPose.transform.position.x;
+          const dyI = rightWristPose.transform.position.y - indexPose.transform.position.y;
+          const dzI = rightWristPose.transform.position.z - indexPose.transform.position.z;
+          const distIndex = Math.sqrt(dxI*dxI + dyI*dyI + dzI*dzI);
+
+          const dxP = rightWristPose.transform.position.x - pinkyPose.transform.position.x;
+          const dyP = rightWristPose.transform.position.y - pinkyPose.transform.position.y;
+          const dzP = rightWristPose.transform.position.z - pinkyPose.transform.position.z;
+          const distPinky = Math.sqrt(dxP*dxP + dyP*dyP + dzP*dzP);
+
+          const isFist = distIndex < 0.11 && distPinky < 0.11;
+          const isOpen = distIndex > 0.15 && distPinky > 0.15;
+
+          // --- STATE MACHINE ---
+          if (this.state === 'IDLE' && isFist) {
+            this.state = 'READY';
+            this.updateHUD('READY\nOpen hand to lock anchor');
+          } else if (this.state === 'READY' && isOpen) {
+            this.state = 'EXPLORING';
+            // SET ANCHOR! We read the position the moment the hand opens.
+            this.anchorRight.copy(rightWristPose.transform.position);
+            this.updateHUD('EXPLORING\nPush from anchor to move');
+          } else if (this.state === 'EXPLORING' && isFist) {
+            this.state = 'IDLE'; 
+            this.updateHUD('BRAKING\nMake fist to engage');
+          }
+
+          // --- LOCOMOTION KINEMATICS ---
+          if (this.state === 'EXPLORING') {
+            let curRight = rightWristPose.transform.position;
+
+            // Calculate positional delta from the invisible anchor point
+            let dZ = curRight.z - this.anchorRight.z; // Push forward is negative Z
+            let dX = curRight.x - this.anchorRight.x; // Right is positive X
+            let dY = curRight.y - this.anchorRight.y; // Up is positive Y (Using Y as thrust now)
+
+            const posDeadzone = 0.04; // 4cm deadzone around anchor
+            const posSensitivity = 10.0; // Multiplier: hand distance -> movement speed
+
+            // Apply deadzones to eliminate micro-jitters
+            let tz = Math.abs(dZ) > posDeadzone ? dZ + (dZ > 0 ? -posDeadzone : posDeadzone) : 0;
+            let tx = Math.abs(dX) > posDeadzone ? dX + (dX > 0 ? -posDeadzone : posDeadzone) : 0;
+            let ty = Math.abs(dY) > posDeadzone ? dY + (dY > 0 ? -posDeadzone : posDeadzone) : 0;
+
+            // Extract Camera's current facing directions
+            const headObj = this.data.head.object3D;
+            
+            // Forward vector relative to where you are looking
+            this.cameraForward.set(0, 0, -1).applyQuaternion(headObj.quaternion);
+            // Right vector relative to where you are looking
+            this.cameraRight.set(1, 0, 0).applyQuaternion(headObj.quaternion);
+
+            // Calculate target velocity based on head orientation
+            let targetVel = new THREE.Vector3();
+            
+            // Pushing hand forward (negative Z delta) moves you FORWARD
+            targetVel.addScaledVector(this.cameraForward, -tz * posSensitivity);
+            // Pushing hand right (positive X delta) moves you RIGHT
+            targetVel.addScaledVector(this.cameraRight, tx * posSensitivity);
+            // Pushing hand up/down moves you strictly vertically globally (optional 'elevation' control)
+            targetVel.y += ty * posSensitivity;
+
+            // Clamp max speed
+            const maxSpeed = 8.0; 
+            if (targetVel.length() > maxSpeed) {
+              targetVel.normalize().multiplyScalar(maxSpeed);
+            }
+
+            // Smooth interpolation for acceleration
+            const lerpFactor = 4.0 * dt; 
+            this.velocity.lerp(targetVel, lerpFactor);
+          }
+        }
+
+        // Apply friction/braking if not moving
+        if (this.state !== 'EXPLORING') {
+          this.velocity.multiplyScalar(0.9);
+        }
+
+        // Apply velocity to the Rig
+        this.data.rig.object3D.position.x += this.velocity.x * dt;
+        this.data.rig.object3D.position.y += this.velocity.y * dt;
+        this.data.rig.object3D.position.z += this.velocity.z * dt;
+
+        // Hard floor collision so you don't clip through the void
+        if (this.data.rig.object3D.position.y < 0) {
+          this.data.rig.object3D.position.y = 0;
+          if (this.velocity.y < 0) this.velocity.y = 0;
+        }
+
+        // --- TELEMETRY DATA PUSH TO HUD ---
+        if (this.data.hudSpd) {
+          let spdStr = this.velocity.length().toFixed(1);
+          this.data.hudSpd.setAttribute('value', `SPD\n${spdStr}m/s`);
+        }
+      }
+    });
+  </script>
 </head>
 <body>
+  <a-scene webxr="optionalFeatures: hand-tracking;" pawn-locomotion background="color: #000000">
+    
+    <!-- Environment -->
+    <a-entity environment="preset: contact; groundColor: #112; grid: 1x1; dressingAmount: 60"></a-entity>
 
-<!-- Gesture HUD (desktop preview) -->
-<div id="gesture-guide">
-  <div class="g-card" id="gc-forward"> <div class="ic">☝️</div><div class="lbl">R-Point</div><div class="act">Forward</div></div>
-  <div class="g-card" id="gc-back">    <div class="ic">✌️</div><div class="lbl">R-Peace</div><div class="act">Back</div></div>
-  <div class="g-card" id="gc-turnL">   <div class="ic">🤌</div><div class="lbl">L-Pinch</div><div class="act">Turn L</div></div>
-  <div class="g-card" id="gc-turnR">   <div class="ic">🤌</div><div class="lbl">R-Pinch</div><div class="act">Turn R</div></div>
-  <div class="g-card" id="gc-bird">    <div class="ic">🖐️</div><div class="lbl">L-Open</div><div class="act">Bird-Eye</div></div>
-  <div class="g-card" id="gc-fly">     <div class="ic">🙌</div><div class="lbl">Both Up</div><div class="act">FLY ✨</div></div>
-  <div class="g-card" id="gc-land">    <div class="ic">👇</div><div class="lbl">Both Down</div><div class="act">Land</div></div>
-  <div class="g-card" id="gc-stop">    <div class="ic">✊</div><div class="lbl">Fist</div><div class="act">Stop</div></div>
-</div>
-
-<div id="gest-banner"></div>
-<div id="fly-vfx"></div>
-<div id="speedlines"></div>
-
-<!-- ================================================================
-     A-FRAME SCENE
-     ================================================================ -->
-<a-scene
-  renderer="antialias:true; physicallyCorrectLights:true; colorManagement:true"
-  background="color:#0a0c20"
-  fog="type:exponential; color:#0a0b1a; density:0.012"
-  xr-mode-ui="enabled:true"
-  loading-screen="enabled:false">
-
-  <a-assets>
-    <a-mixin id="glow-pink"  material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:1.5"></a-mixin>
-    <a-mixin id="glow-cyan"  material="color:#00ffff; emissive:#00ffff; emissiveIntensity:1.5"></a-mixin>
-    <a-mixin id="glow-gold"  material="color:#ffcc00; emissive:#ffcc00; emissiveIntensity:1.5"></a-mixin>
-    <a-mixin id="glow-white" material="color:#ffffff; emissive:#ffffff; emissiveIntensity:1.2"></a-mixin>
-  </a-assets>
-
-  <!-- SKY -->
-  <a-sky color="#06061a"></a-sky>
-
-  <!-- STARS sprinkled in sky -->
-  <a-entity id="stars">
-    <a-sphere radius="0.06" position=" 15 22 -30" mixin="glow-white"></a-sphere>
-    <a-sphere radius="0.06" position="-18 25 -28" mixin="glow-cyan"></a-sphere>
-    <a-sphere radius="0.05" position="  8 28 -35" mixin="glow-pink"></a-sphere>
-    <a-sphere radius="0.07" position="-12 20 -40" mixin="glow-gold"></a-sphere>
-    <a-sphere radius="0.05" position=" 22 24 -20" mixin="glow-white"></a-sphere>
-    <a-sphere radius="0.06" position=" -5 30 -25" mixin="glow-pink"></a-sphere>
-    <a-sphere radius="0.05" position=" 18 18 -45" mixin="glow-cyan"></a-sphere>
-    <a-sphere radius="0.07" position="-20 22 -38" mixin="glow-gold"></a-sphere>
-    <a-sphere radius="0.05" position="  3 32 -30" mixin="glow-white"></a-sphere>
-    <a-sphere radius="0.06" position="-25 27 -22" mixin="glow-pink"></a-sphere>
-  </a-entity>
-
-  <!-- LIGHTS -->
-  <a-light type="ambient"     color="#b8c4ff" intensity="0.6"></a-light>
-  <a-light type="directional" color="#ffe5b0" intensity="0.7" position="5 12 8"></a-light>
-  <a-light type="point" color="#ff00ff" intensity="2.5" position="0 14 -60" distance="50">
-    <a-animation attribute="light.color" from="#ff00ff" to="#00ffff" dur="4000" direction="alternate" repeat="indefinite"></a-animation>
-  </a-light>
-  <a-light type="point" color="#ffcc00" intensity="1.2" position="0 8 -20" distance="30"></a-light>
-  <a-light type="point" color="#00ffff" intensity="1"   position="8 6  0"  distance="20"></a-light>
-  <a-light type="point" color="#ff3300" intensity="1"   position="-8 6  0" distance="20"></a-light>
-
-  <!-- ============================================================
-       CAMERA RIG — gesture locomotion attached here
-       ============================================================ -->
-  <a-entity id="rig" position="0 0 0" gesture-locomotion>
-
-    <a-entity id="camera" camera="fov:80; active:true"
-      position="0 1.6 0"
-      look-controls="pointerLockEnabled:false">
+    <!-- ABSTRACT FLOATING GEOMETRY GARDEN -->
+    <!-- Platform 1: Central Hub -->
+    <a-entity position="0 4 -12" oscillate="speed: 1.2; amount: 0.8; offset: 0">
+      <a-cylinder segments-radial="6" radius="4" height="0.4" color="#111" wireframe="false"></a-cylinder>
+      <a-cylinder segments-radial="6" radius="4.1" height="0.45" color="#00ffff" wireframe="true"></a-cylinder>
+      <a-icosahedron color="#ff00ff" wireframe="true" radius="1.2" position="0 2 0" animation="property: rotation; to: 0 360 0; loop: true; dur: 8000; easing: linear"></a-icosahedron>
+      <a-octahedron color="#00ffff" opacity="0.5" radius="0.5" position="0 2 0" animation="property: rotation; to: 360 0 360; loop: true; dur: 4000; easing: linear"></a-octahedron>
     </a-entity>
 
-    <!-- LEFT HAND -->
-    <a-entity id="leftHand"
-      hand-tracking-controls="hand:left; modelColor:#ffaa66"
-      raycaster="showLine:true; far:18; lineOpacity:0.3; objects:.floor">
+    <!-- Platform 2: High Right -->
+    <a-entity position="12 8 -25" oscillate="speed: 0.8; amount: 1.5; offset: 2.5">
+      <a-cylinder segments-radial="6" radius="3" height="0.4" color="#111" wireframe="false"></a-cylinder>
+      <a-cylinder segments-radial="6" radius="3.1" height="0.45" color="#00ffaa" wireframe="true"></a-cylinder>
+      <a-cone radius-bottom="0.8" radius-top="0" segments-radial="4" height="2" color="#00ffaa" wireframe="true" position="0 1 0"></a-cone>
+      <a-cone radius-bottom="0" radius-top="0.8" segments-radial="4" height="2" color="#00ffaa" wireframe="true" position="0 3 0"></a-cone>
     </a-entity>
 
-    <!-- RIGHT HAND -->
-    <a-entity id="rightHand"
-      hand-tracking-controls="hand:right; modelColor:#66aaff"
-      raycaster="showLine:true; far:18; lineOpacity:0.3; objects:.floor">
+    <!-- Platform 3: Low Left -->
+    <a-entity position="-15 5 -20" oscillate="speed: 1.5; amount: 0.6; offset: 1.2">
+      <a-cylinder segments-radial="6" radius="5" height="0.4" color="#111" wireframe="false"></a-cylinder>
+      <a-cylinder segments-radial="6" radius="5.1" height="0.45" color="#ff00ff" wireframe="true"></a-cylinder>
+      <a-dodecahedron color="#ff00ff" wireframe="true" radius="1.5" position="0 1.5 0" animation="property: rotation; to: -360 360 0; loop: true; dur: 12000; easing: linear"></a-dodecahedron>
+      <a-dodecahedron color="#00ffff" wireframe="true" radius="0.8" position="2 1 2" animation="property: rotation; to: 0 360 360; loop: true; dur: 6000; easing: linear"></a-dodecahedron>
+      <a-dodecahedron color="#00ffaa" wireframe="true" radius="1.0" position="-2 2 -1" animation="property: rotation; to: 360 0 -360; loop: true; dur: 9000; easing: linear"></a-dodecahedron>
     </a-entity>
-  </a-entity>
 
-  <!-- ============================================================
-       INVISIBLE FLOOR (walkable)
-       ============================================================ -->
-  <a-box class="floor" width="80" height="0.1" depth="200"
-    position="0 -0.1 -60" visible="false">
-  </a-box>
+    <!-- Angular Training Rings -->
+    <a-entity id="training-course">
+      <a-torus position="0 1.5 -6" radius="1.2" tube="0.05" color="#00ffaa" rotation="0 0 0" opacity="0.8"></a-torus>
+      <a-torus position="0 2.5 -16" radius="1.2" tube="0.05" color="#00ffaa" rotation="0 0 0" opacity="0.8"></a-torus>
+      <a-torus position="3 2.0 -24" radius="1.2" tube="0.05" color="#00ffaa" rotation="0 30 0" opacity="0.8"></a-torus>
+      <a-torus position="8 1.5 -30" radius="1.2" tube="0.05" color="#00ffaa" rotation="0 60 0" opacity="0.8"></a-torus>
+    </a-entity>
 
-  <!-- ============================================================
-       GROUND SURFACE
-       ============================================================ -->
-  <a-box width="18" height="0.2" depth="180"
-    position="0 -0.1 -40"
-    material="color:#101225; roughness:0.85; metalness:0.1; transparent:true; opacity:0.8">
-  </a-box>
+    <!-- Player Rig -->
+    <a-entity id="rig" position="0 0 0">
+      
+      <!-- Camera / Head -->
+      <a-camera id="head" position="0 1.6 0">
+        
+        <!-- Clean Tactical HUD -->
+        <a-entity id="iron-man-hud" position="0 0 -0.8">
+          
+          <!-- Center Reticle -->
+          <a-ring color="#00ffff" radius-inner="0.03" radius-outer="0.035" opacity="0.6"></a-ring>
+          <a-circle color="#ff3333" radius="0.003" opacity="0.8"></a-circle>
 
-  <!-- Path center glow strip -->
-  <a-box width="0.5" height="0.05" depth="180" position="0 0.02 -40"
-    material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:0.35; transparent:true; opacity:0.6">
-    <a-animation attribute="material.emissiveIntensity" from="0.15" to="0.6" dur="2500" direction="alternate" repeat="indefinite"></a-animation>
-  </a-box>
+          <!-- Framing Lines -->
+          <a-entity line="start: -0.4 0.3 0; end: 0.4 0.3 0; color: #00ffff; opacity: 0.3"></a-entity>
+          <a-entity line="start: -0.4 -0.3 0; end: 0.4 -0.3 0; color: #00ffff; opacity: 0.3"></a-entity>
 
-  <!-- ============================================================
-       PATH MARKERS — forward arrows along the ground
-       ============================================================ -->
-  <a-entity position="0 0.08 -8">
-    <a-cone radius-bottom="0.4" radius-top="0" height="0.8" rotation="90 0 0"
-      material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:1.2">
-      <a-animation attribute="material.opacity" from="0.3" to="1" dur="1100" direction="alternate" repeat="indefinite"></a-animation>
-    </a-cone>
-  </a-entity>
-  <a-entity position="0 0.08 -18">
-    <a-cone radius-bottom="0.4" radius-top="0" height="0.8" rotation="90 0 0"
-      material="color:#00ffff; emissive:#00ffff; emissiveIntensity:1.2">
-      <a-animation attribute="material.opacity" from="0.3" to="1" dur="1100" direction="alternate" repeat="indefinite" delay="250"></a-animation>
-    </a-cone>
-  </a-entity>
-  <a-entity position="0 0.08 -30">
-    <a-cone radius-bottom="0.4" radius-top="0" height="0.8" rotation="90 0 0"
-      material="color:#ffcc00; emissive:#ffcc00; emissiveIntensity:1.2">
-      <a-animation attribute="material.opacity" from="0.3" to="1" dur="1100" direction="alternate" repeat="indefinite" delay="500"></a-animation>
-    </a-cone>
-  </a-entity>
-  <a-entity position="0 0.08 -44">
-    <a-cone radius-bottom="0.4" radius-top="0" height="0.8" rotation="90 0 0"
-      material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:1.2">
-      <a-animation attribute="material.opacity" from="0.3" to="1" dur="1100" direction="alternate" repeat="indefinite" delay="750"></a-animation>
-    </a-cone>
-  </a-entity>
-  <a-entity position="0 0.08 -58">
-    <a-cone radius-bottom="0.4" radius-top="0" height="0.8" rotation="90 0 0"
-      material="color:#00ffff; emissive:#00ffff; emissiveIntensity:1.2">
-      <a-animation attribute="material.opacity" from="0.3" to="1" dur="1100" direction="alternate" repeat="indefinite" delay="1000"></a-animation>
-    </a-cone>
-  </a-entity>
+          <!-- Left: Speed -->
+          <a-text id="hud-spd" 
+                  position="-0.45 0 0" 
+                  value="SPD\n0.0m/s" 
+                  align="center" 
+                  width="1.2" 
+                  color="#00ffff" 
+                  font="monoid"
+                  opacity="0.9">
+          </a-text>
 
-  <!-- ============================================================
-       FLOATING PATH ORBS (left + right sides)
-       ============================================================ -->
-  <a-sphere radius="0.28" position="-3 1.1 -8"  mixin="glow-pink"> <a-animation attribute="position" from="-3 1.1 -8"  to="-3 1.7 -8"  dur="2200" direction="alternate" repeat="indefinite" easing="easeInOutSine"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position=" 3 1.1 -8"  mixin="glow-cyan"> <a-animation attribute="position" from=" 3 1.1 -8"  to=" 3 1.7 -8"  dur="2200" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="400"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position="-3 1.1 -18" mixin="glow-gold"> <a-animation attribute="position" from="-3 1.1 -18" to="-3 1.7 -18" dur="1900" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="200"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position=" 3 1.1 -18" mixin="glow-pink"> <a-animation attribute="position" from=" 3 1.1 -18" to=" 3 1.7 -18" dur="1900" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="700"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position="-3 1.1 -30" mixin="glow-cyan"> <a-animation attribute="position" from="-3 1.1 -30" to="-3 1.7 -30" dur="2500" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="100"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position=" 3 1.1 -30" mixin="glow-gold"> <a-animation attribute="position" from=" 3 1.1 -30" to=" 3 1.7 -30" dur="2500" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="900"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position="-3 1.1 -44" mixin="glow-pink"> <a-animation attribute="position" from="-3 1.1 -44" to="-3 1.7 -44" dur="2100" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="300"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position=" 3 1.1 -44" mixin="glow-cyan"> <a-animation attribute="position" from=" 3 1.1 -44" to=" 3 1.7 -44" dur="2100" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="600"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position="-3 1.1 -58" mixin="glow-gold"> <a-animation attribute="position" from="-3 1.1 -58" to="-3 1.7 -58" dur="2300" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="150"></a-animation></a-sphere>
-  <a-sphere radius="0.28" position=" 3 1.1 -58" mixin="glow-pink"> <a-animation attribute="position" from=" 3 1.1 -58" to=" 3 1.7 -58" dur="2300" direction="alternate" repeat="indefinite" easing="easeInOutSine" delay="800"></a-animation></a-sphere>
+          <!-- Bottom: State Warnings -->
+          <a-text id="hud-state" 
+                  position="0 -0.35 0" 
+                  value="INITIALIZING..." 
+                  align="center" 
+                  width="0.9" 
+                  color="#ff3333" 
+                  font="monoid">
+          </a-text>
 
-  <!-- Glowing ground dots along center -->
-  <a-cylinder radius="0.35" height="0.06" segments-radial="12" position="0 0.04 -13" mixin="glow-pink"><a-animation attribute="material.emissiveIntensity" from="0.5" to="2" dur="1500" direction="alternate" repeat="indefinite"></a-animation></a-cylinder>
-  <a-cylinder radius="0.35" height="0.06" segments-radial="12" position="0 0.04 -26" mixin="glow-cyan"><a-animation attribute="material.emissiveIntensity" from="0.5" to="2" dur="1700" direction="alternate" repeat="indefinite"></a-animation></a-cylinder>
-  <a-cylinder radius="0.35" height="0.06" segments-radial="12" position="0 0.04 -39" mixin="glow-gold"><a-animation attribute="material.emissiveIntensity" from="0.5" to="2" dur="1300" direction="alternate" repeat="indefinite"></a-animation></a-cylinder>
-  <a-cylinder radius="0.35" height="0.06" segments-radial="12" position="0 0.04 -52" mixin="glow-pink"><a-animation attribute="material.emissiveIntensity" from="0.5" to="2" dur="1600" direction="alternate" repeat="indefinite"></a-animation></a-cylinder>
+        </a-entity>
+      </a-camera>
 
-  <!-- ============================================================
-       ARCH GATES along the path
-       ============================================================ -->
-  <!-- Gate 1 -->
-  <a-entity position="0 0 -15">
-    <a-box width="0.5" height="7" depth="0.5" position="-4.5 3.5 0" material="color:#1a0030; metalness:0.5"></a-box>
-    <a-box width="0.5" height="7" depth="0.5" position=" 4.5 3.5 0" material="color:#1a0030; metalness:0.5"></a-box>
-    <a-box width="9.5" height="0.5" depth="0.5" position="0 7.25 0"  material="color:#1a0030; metalness:0.5"></a-box>
-    <a-box width="0.08" height="7" depth="0.08" position="-4.5 3.5 0" mixin="glow-pink"></a-box>
-    <a-box width="0.08" height="7" depth="0.08" position=" 4.5 3.5 0" mixin="glow-pink"></a-box>
-    <a-box width="9.5"  height="0.08" depth="0.08" position="0 7.25 0" mixin="glow-pink"></a-box>
-    <a-text value="ZONE 1" position="0 8.2 0" align="center" width="5" color="#ff00ff" font="mozillavr"></a-text>
-  </a-entity>
+      <!-- Hand Models -->
+      <a-entity id="leftHand" hand-tracking-controls="hand: left; modelColor: #00ffff;"></a-entity>
+      <a-entity id="rightHand" hand-tracking-controls="hand: right; modelColor: #00ffff;"></a-entity>
 
-  <!-- Gate 2 -->
-  <a-entity position="0 0 -35">
-    <a-box width="0.5" height="7" depth="0.5" position="-4.5 3.5 0" material="color:#001a30; metalness:0.5"></a-box>
-    <a-box width="0.5" height="7" depth="0.5" position=" 4.5 3.5 0" material="color:#001a30; metalness:0.5"></a-box>
-    <a-box width="9.5" height="0.5" depth="0.5" position="0 7.25 0"  material="color:#001a30; metalness:0.5"></a-box>
-    <a-box width="0.08" height="7" depth="0.08" position="-4.5 3.5 0" mixin="glow-cyan"></a-box>
-    <a-box width="0.08" height="7" depth="0.08" position=" 4.5 3.5 0" mixin="glow-cyan"></a-box>
-    <a-box width="9.5"  height="0.08" depth="0.08" position="0 7.25 0" mixin="glow-cyan"></a-box>
-    <a-text value="ZONE 2" position="0 8.2 0" align="center" width="5" color="#00ffff" font="mozillavr"></a-text>
-  </a-entity>
+    </a-entity>
 
-  <!-- Gate 3 -->
-  <a-entity position="0 0 -55">
-    <a-box width="0.5" height="7" depth="0.5" position="-4.5 3.5 0" material="color:#1a1a00; metalness:0.5"></a-box>
-    <a-box width="0.5" height="7" depth="0.5" position=" 4.5 3.5 0" material="color:#1a1a00; metalness:0.5"></a-box>
-    <a-box width="9.5" height="0.5" depth="0.5" position="0 7.25 0"  material="color:#1a1a00; metalness:0.5"></a-box>
-    <a-box width="0.08" height="7" depth="0.08" position="-4.5 3.5 0" mixin="glow-gold"></a-box>
-    <a-box width="0.08" height="7" depth="0.08" position=" 4.5 3.5 0" mixin="glow-gold"></a-box>
-    <a-box width="9.5"  height="0.08" depth="0.08" position="0 7.25 0" mixin="glow-gold"></a-box>
-    <a-text value="ZONE 3" position="0 8.2 0" align="center" width="5" color="#ffcc00" font="mozillavr"></a-text>
-  </a-entity>
-
-  <!-- ============================================================
-       TREES (Tomorrowland style)
-       ============================================================ -->
-  <a-entity position="-7 0 -15"><a-cone radius-bottom="1.5" radius-top="0.1" height="5" position="0 2.5 0" material="color:#200d00"></a-cone><a-sphere radius="1.5" position="0 5.5 0" material="color:#1a5c1a; emissive:#0d2e0d; emissiveIntensity:0.4"></a-sphere></a-entity>
-  <a-entity position=" 7 0 -15"><a-cone radius-bottom="1.5" radius-top="0.1" height="5" position="0 2.5 0" material="color:#200d00"></a-cone><a-sphere radius="1.5" position="0 5.5 0" material="color:#1a5c1a; emissive:#0d2e0d; emissiveIntensity:0.4"></a-sphere></a-entity>
-  <a-entity position="-7 0 -35"><a-cone radius-bottom="1.5" radius-top="0.1" height="5" position="0 2.5 0" material="color:#200d00"></a-cone><a-sphere radius="1.5" position="0 5.5 0" material="color:#1a5c1a; emissive:#0d2e0d; emissiveIntensity:0.4"></a-sphere></a-entity>
-  <a-entity position=" 7 0 -35"><a-cone radius-bottom="1.5" radius-top="0.1" height="5" position="0 2.5 0" material="color:#200d00"></a-cone><a-sphere radius="1.5" position="0 5.5 0" material="color:#1a5c1a; emissive:#0d2e0d; emissiveIntensity:0.4"></a-sphere></a-entity>
-  <a-entity position="-9 0 -50"><a-cone radius-bottom="1.2" radius-top="0.1" height="4" position="0 2 0" material="color:#200d00"></a-cone><a-sphere radius="1.2" position="0 4.5 0" material="color:#1a5c1a; emissive:#0d2e0d; emissiveIntensity:0.4"></a-sphere></a-entity>
-  <a-entity position=" 9 0 -50"><a-cone radius-bottom="1.2" radius-top="0.1" height="4" position="0 2 0" material="color:#200d00"></a-cone><a-sphere radius="1.2" position="0 4.5 0" material="color:#1a5c1a; emissive:#0d2e0d; emissiveIntensity:0.4"></a-sphere></a-entity>
-
-  <!-- ============================================================
-       THE STAGE (end of path)
-       ============================================================ -->
-  <!-- Platform -->
-  <a-box width="18" height="1.2" depth="8" position="0 0.6 -75"
-    material="color:#0d0d22; metalness:0.4; roughness:0.6">
-  </a-box>
-  <!-- LED stage floor -->
-  <a-box width="17.8" height="0.05" depth="7.8" position="0 1.25 -75"
-    material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:1">
-    <a-animation attribute="material.emissive" from="#ff00ff" to="#00ffff" dur="3000" direction="alternate" repeat="indefinite"></a-animation>
-    <a-animation attribute="material.color"    from="#ff00ff" to="#00ffff" dur="3000" direction="alternate" repeat="indefinite"></a-animation>
-  </a-box>
-  <!-- Main screen -->
-  <a-plane width="18" height="10" position="0 7.5 -79.5"
-    material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:1.2">
-    <a-animation attribute="material.emissive" from="#ff00ff" to="#00ffff" dur="5000" direction="alternate" repeat="indefinite"></a-animation>
-    <a-animation attribute="material.color"    from="#ff00ff" to="#00ffff" dur="5000" direction="alternate" repeat="indefinite"></a-animation>
-  </a-plane>
-  <a-text value="LIVE TONIGHT" position="0 7.5 -79" align="center" width="12" color="#fff" font="mozillavr"></a-text>
-  <!-- Truss towers -->
-  <a-box width="1" height="16" depth="1" position=" 8 8 -72" material="color:#111; metalness:0.8"></a-box>
-  <a-box width="0.07" height="16" depth="0.07" position=" 8.4 8 -72" mixin="glow-pink"></a-box>
-  <a-box width="1" height="16" depth="1" position="-8 8 -72" material="color:#111; metalness:0.8"></a-box>
-  <a-box width="0.07" height="16" depth="0.07" position="-8.4 8 -72" mixin="glow-cyan"></a-box>
-  <a-box width="1" height="16" depth="1" position=" 8 8 -79" material="color:#111; metalness:0.8"></a-box>
-  <a-box width="0.07" height="16" depth="0.07" position=" 8.4 8 -79" mixin="glow-gold"></a-box>
-  <a-box width="1" height="16" depth="1" position="-8 8 -79" material="color:#111; metalness:0.8"></a-box>
-  <a-box width="0.07" height="16" depth="0.07" position="-8.4 8 -79" mixin="glow-pink"></a-box>
-  <!-- Top truss beam -->
-  <a-box width="18" height="0.4" depth="0.4" position="0 16.2 -72" material="color:#222; metalness:0.8"></a-box>
-  <a-box width="18" height="0.4" depth="0.4" position="0 16.2 -79" material="color:#222; metalness:0.8"></a-box>
-  <!-- Hanging lights on truss -->
-  <a-sphere radius="0.25" position=" 6 14.5 -75" mixin="glow-white"></a-sphere>
-  <a-sphere radius="0.25" position=" 2 14.5 -75" mixin="glow-pink"></a-sphere>
-  <a-sphere radius="0.25" position="-2 14.5 -75" mixin="glow-cyan"></a-sphere>
-  <a-sphere radius="0.25" position="-6 14.5 -75" mixin="glow-gold"></a-sphere>
-  <!-- Lasers -->
-  <a-cylinder radius="0.04" height="28" position=" 4 14 -73" material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:2; opacity:0.65; transparent:true"><a-animation attribute="rotation" from="0 0 -14" to="0 0 14" dur="3500" direction="alternate" repeat="indefinite"></a-animation></a-cylinder>
-  <a-cylinder radius="0.04" height="28" position="-4 14 -73" material="color:#00ffff; emissive:#00ffff; emissiveIntensity:2; opacity:0.65; transparent:true"><a-animation attribute="rotation" from="0 0 14" to="0 0 -14" dur="5000" direction="alternate" repeat="indefinite"></a-animation></a-cylinder>
-  <a-cylinder radius="0.04" height="28" position=" 0 14 -77" material="color:#ffcc00; emissive:#ffcc00; emissiveIntensity:2; opacity:0.65; transparent:true"><a-animation attribute="rotation" from="-14 0 0" to="14 0 0" dur="7000" direction="alternate" repeat="indefinite"></a-animation></a-cylinder>
-
-  <!-- ============================================================
-       ★ OVERHEAD VISUAL RIG — what you FLY UP TO ★
-       Positioned at Y=24, visible from ground as a glowing crown.
-       From fly height (Y=20) you see it up close — magical.
-       ============================================================ -->
-
-  <!-- Outer slow-spin ring -->
-  <a-torus id="aerial-outer" radius="22" tube="0.35" position="0 28 -35"
-    material="color:#1a0a2e; metalness:0.7; emissive:#2a0a3e; emissiveIntensity:0.5"
-    segments-tubular="48">
-    <a-animation attribute="rotation" from="0 0 0" to="0 360 0" dur="55000" repeat="indefinite" easing="linear"></a-animation>
-  </a-torus>
-
-  <!-- Middle counter-spin ring -->
-  <a-torus id="aerial-mid" radius="14" tube="0.25" position="0 26 -35"
-    material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:0.7"
-    segments-tubular="36">
-    <a-animation attribute="rotation" from="0 0 0" to="0 -360 0" dur="28000" repeat="indefinite" easing="linear"></a-animation>
-    <a-animation attribute="material.emissive" from="#ff00ff" to="#00ffff" dur="4000" direction="alternate" repeat="indefinite"></a-animation>
-  </a-torus>
-
-  <!-- Inner fast-spin ring -->
-  <a-torus id="aerial-inner" radius="7" tube="0.18" position="0 24 -35"
-    material="color:#00ffff; emissive:#00ffff; emissiveIntensity:1"
-    segments-tubular="24">
-    <a-animation attribute="rotation" from="0 0 0" to="0 360 0" dur="10000" repeat="indefinite" easing="linear"></a-animation>
-    <a-animation attribute="material.emissive" from="#00ffff" to="#ffcc00" dur="3000" direction="alternate" repeat="indefinite"></a-animation>
-  </a-torus>
-
-  <!-- Orbs on outer ring (8 equally spaced) -->
-  <a-entity id="aerial-orbs" position="0 28 -35">
-    <a-sphere radius="0.6" position=" 22  0  0" mixin="glow-pink"><a-animation attribute="material.emissiveIntensity" from="0.8" to="2.5" dur="2000" direction="alternate" repeat="indefinite"></a-animation></a-sphere>
-    <a-sphere radius="0.6" position="-22  0  0" mixin="glow-cyan"><a-animation attribute="material.emissiveIntensity" from="0.8" to="2.5" dur="2200" direction="alternate" repeat="indefinite" delay="300"></a-animation></a-sphere>
-    <a-sphere radius="0.6" position="  0  0  22" mixin="glow-gold"><a-animation attribute="material.emissiveIntensity" from="0.8" to="2.5" dur="1800" direction="alternate" repeat="indefinite" delay="600"></a-animation></a-sphere>
-    <a-sphere radius="0.6" position="  0  0 -22" mixin="glow-white"><a-animation attribute="material.emissiveIntensity" from="0.8" to="2.5" dur="2400" direction="alternate" repeat="indefinite" delay="900"></a-animation></a-sphere>
-    <a-sphere radius="0.5" position=" 15.5  0  15.5" mixin="glow-pink"></a-sphere>
-    <a-sphere radius="0.5" position="-15.5  0  15.5" mixin="glow-gold"></a-sphere>
-    <a-sphere radius="0.5" position=" 15.5  0 -15.5" mixin="glow-cyan"></a-sphere>
-    <a-sphere radius="0.5" position="-15.5  0 -15.5" mixin="glow-white"></a-sphere>
-  </a-entity>
-
-  <!-- Central aerial medallion (the crown jewel) -->
-  <a-entity position="0 24 -35">
-    <a-torus radius="3" tube="0.12" material="color:#ffcc00; emissive:#ffcc00; emissiveIntensity:2" segments-tubular="24">
-      <a-animation attribute="rotation" from="0 0 0" to="360 180 0" dur="6000" repeat="indefinite" easing="linear"></a-animation>
-    </a-torus>
-    <a-torus radius="3" tube="0.12" rotation="90 0 0" material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:2" segments-tubular="24">
-      <a-animation attribute="rotation" from="90 0 0" to="90 360 0" dur="8000" repeat="indefinite" easing="linear"></a-animation>
-    </a-torus>
-    <a-sphere radius="1.2" material="color:#ffffff; emissive:#ffffff; emissiveIntensity:2">
-      <a-animation attribute="material.emissive" from="#ffffff" to="#ff00ff" dur="2000" direction="alternate" repeat="indefinite"></a-animation>
-      <a-animation attribute="material.color"    from="#ffffff" to="#00ffff" dur="3000" direction="alternate" repeat="indefinite"></a-animation>
-    </a-sphere>
-    <!-- Downward light beams from medallion -->
-    <a-cylinder radius="0.06" height="25" position="0 -12 0"  material="color:#ffffff; emissive:#ffffff; emissiveIntensity:2; opacity:0.4; transparent:true"></a-cylinder>
-    <a-cylinder radius="0.05" height="22" position=" 2.5 -11 0" material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:2; opacity:0.35; transparent:true" rotation="0 0 8"></a-cylinder>
-    <a-cylinder radius="0.05" height="22" position="-2.5 -11 0" material="color:#00ffff; emissive:#00ffff; emissiveIntensity:2; opacity:0.35; transparent:true" rotation="0 0 -8"></a-cylinder>
-  </a-entity>
-
-  <!-- Vertical light pillars connecting ground to aerial rig -->
-  <a-cylinder radius="0.06" height="28" position=" 6 14 -28" material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:1; opacity:0.25; transparent:true"></a-cylinder>
-  <a-cylinder radius="0.06" height="28" position="-6 14 -28" material="color:#00ffff; emissive:#00ffff; emissiveIntensity:1; opacity:0.25; transparent:true"></a-cylinder>
-  <a-cylinder radius="0.06" height="28" position=" 6 14 -42" material="color:#ffcc00; emissive:#ffcc00; emissiveIntensity:1; opacity:0.25; transparent:true"></a-cylinder>
-  <a-cylinder radius="0.06" height="28" position="-6 14 -42" material="color:#ff00ff; emissive:#ff00ff; emissiveIntensity:1; opacity:0.25; transparent:true"></a-cylinder>
-
-</a-scene>
-
-<!-- ================================================================
-     GESTURE LOCOMOTION COMPONENT
-     ================================================================
-
-  GESTURE → ACTION MAP
-  ─────────────────────────────────────────────────────────────────
-  RIGHT HAND:
-    ☝  Index only extended      → Walk FORWARD continuously
-    ✌  Index + Middle extended  → Walk BACKWARD continuously
-    🤙 Thumb + Pinky only       → Strafe RIGHT
-    👍 Thumb only               → Strafe LEFT
-    🤜 Pinch (thumb≈index tip)  → Turn RIGHT 45° (one-shot, cooldown)
-    ✊ Fist (nothing extended)  → STOP + haptic pulse
-
-  LEFT HAND:
-    🤜 Pinch (thumb≈index tip)  → Turn LEFT 45° (one-shot, cooldown)
-    🖐  All 5 extended, wrist≤1m→ BIRD'S-EYE VIEW (rise to Y=12)
-    🙌 Left palm raised >2m     → used in BOTH HANDS FLY check below
-
-  BOTH HANDS COMBINED:
-    🙌 Both wrists above Y=1.9  → FLY UP to aerial rig (Y=20)
-                                   + visual effect (speedlines + glow)
-    👐 Both wrists below Y=0.9  → LAND back to ground (Y=0)
-  ─────────────────────────────────────────────────────────────────
-  Finger extension detection:
-    For each finger we compare the distance from the WRIST to the
-    FINGER_TIP vs. the distance from WRIST to the PROXIMAL knuckle.
-    If tip is >1.5× farther than proximal → finger is "extended".
-    This is robust across different hand sizes and orientations.
-
-  Pinch detection:
-    Thumb tip distance to index tip < 2.5 cm → pinch.
-
-  All movement is camera-relative (yaw only) so you always walk
-  in the direction you're looking regardless of body orientation.
-================================================================ -->
-
-<script>
-AFRAME.registerComponent('gesture-locomotion', {
-  schema: {
-    walkSpeed:   { default: 0.10  },
-    strafeSpeed: { default: 0.07  },
-    flySpeed:    { default: 0.18  },
-    turnDeg:     { default: 45    },
-    groundY:     { default: 0     },
-    birdY:       { default: 12    },
-    flyY:        { default: 20    }
-  },
-
-  init() {
-    this.rig    = this.el;
-    this.cam    = document.getElementById('camera');
-    this.lHand  = document.getElementById('leftHand');
-    this.rHand  = document.getElementById('rightHand');
-
-    this.targetY  = this.data.groundY;
-    this.mode     = 'ground'; // ground | bird | fly
-
-    // Pinch turn cooldowns (ms)
-    this.coolL = 0;
-    this.coolR = 0;
-
-    // HUD card refs
-    this.hud = {
-      forward: document.getElementById('gc-forward'),
-      back:    document.getElementById('gc-back'),
-      turnL:   document.getElementById('gc-turnL'),
-      turnR:   document.getElementById('gc-turnR'),
-      bird:    document.getElementById('gc-bird'),
-      fly:     document.getElementById('gc-fly'),
-      land:    document.getElementById('gc-land'),
-      stop:    document.getElementById('gc-stop'),
-    };
-    this.banner   = document.getElementById('gest-banner');
-    this.flyVfx   = document.getElementById('fly-vfx');
-    this.spLines  = document.getElementById('speedlines');
-    this._bannerT = null;
-
-    // Keyboard map (desktop fallback)
-    this._k = {};
-    document.addEventListener('keydown', e => { this._k[e.code] = true; });
-    document.addEventListener('keyup',   e => { this._k[e.code] = false; });
-
-    // Joint index constants (WebXR Hand Joints spec)
-    this.J = {
-      WRIST: 0,
-      THUMB_PROX: 2, THUMB_TIP: 4,
-      INDEX_PROX: 6, INDEX_TIP: 9,
-      MID_PROX: 11,  MID_TIP: 14,
-      RING_PROX: 16, RING_TIP: 19,
-      PINK_PROX: 21, PINK_TIP: 24
-    };
-
-    // Cycle the gesture guide on startup so user knows what to do
-    this._cycleGuide();
-  },
-
-  // ── Utility: world position of a hand bone ──────────────────
-  bonePos(bones, idx) {
-    if (!bones || !bones[idx]) return null;
-    const v = new THREE.Vector3();
-    bones[idx].getWorldPosition(v);
-    return v;
-  },
-
-  // ── Is finger extended? (tip farther from wrist than proximal) ──
-  extended(bones, tipIdx, proxIdx) {
-    const wrist = this.bonePos(bones, this.J.WRIST);
-    const tip   = this.bonePos(bones, tipIdx);
-    const prox  = this.bonePos(bones, proxIdx);
-    if (!wrist || !tip || !prox) return false;
-    return tip.distanceTo(wrist) > prox.distanceTo(wrist) * 1.45;
-  },
-
-  // ── Pinch: thumb tip close to index tip ──────────────────────
-  pinching(bones) {
-    const tt = this.bonePos(bones, this.J.THUMB_TIP);
-    const it = this.bonePos(bones, this.J.INDEX_TIP);
-    if (!tt || !it) return false;
-    return tt.distanceTo(it) < 0.028;
-  },
-
-  // ── Get bones for a hand entity ──────────────────────────────
-  bones(handEl) {
-    const c = handEl && handEl.components['hand-tracking-controls'];
-    return (c && c.bones && c.bones.length >= 25) ? c.bones : null;
-  },
-
-  // ── Classify gesture → string ─────────────────────────────────
-  classify(handEl) {
-    const b = this.bones(handEl);
-    if (!b) return 'none';
-    const J = this.J;
-
-    if (this.pinching(b)) return 'pinch';
-
-    const thumb  = this.extended(b, J.THUMB_TIP, J.THUMB_PROX);
-    const index  = this.extended(b, J.INDEX_TIP, J.INDEX_PROX);
-    const mid    = this.extended(b, J.MID_TIP,   J.MID_PROX);
-    const ring   = this.extended(b, J.RING_TIP,  J.RING_PROX);
-    const pinky  = this.extended(b, J.PINK_TIP,  J.PINK_PROX);
-    const ext    = [thumb, index, mid, ring, pinky];
-    const count  = ext.filter(Boolean).length;
-
-    if (count === 0)                               return 'fist';
-    if (count === 5)                               return 'open';
-    if (!thumb && index && !mid && !ring && !pinky) return 'point';
-    if (!thumb && index && mid  && !ring && !pinky) return 'peace';
-    if (thumb  && !index && !mid && !ring && pinky) return 'hangloos';
-    if (thumb  && !index && !mid && !ring && !pinky)return 'thumbsup';
-    return 'other';
-  },
-
-  // ── Wrist Y of a hand ─────────────────────────────────────────
-  wristY(handEl) {
-    const b = this.bones(handEl);
-    if (!b) return 0;
-    const w = this.bonePos(b, this.J.WRIST);
-    return w ? w.y : 0;
-  },
-
-  // ── Banner flash ──────────────────────────────────────────────
-  flash(text) {
-    if (!this.banner) return;
-    this.banner.textContent = text;
-    this.banner.classList.add('show');
-    clearTimeout(this._bannerT);
-    this._bannerT = setTimeout(() => this.banner.classList.remove('show'), 1800);
-  },
-
-  // ── Light up a HUD card ──────────────────────────────────────
-  lit(key) {
-    Object.values(this.hud).forEach(c => c && c.classList.remove('lit'));
-    if (key && this.hud[key]) this.hud[key].classList.add('lit');
-  },
-
-  // ── Guide cycle on startup ───────────────────────────────────
-  _cycleGuide() {
-    const steps = [
-      '☝️  Point forward → Walk',
-      '✌️  Peace sign → Walk Back',
-      '🤌  Pinch → Turn L / Turn R',
-      '🖐️  Open palm → Bird\'s Eye',
-      '🙌  Both hands up → FLY!',
-      '👇  Both hands down → Land',
-    ];
-    let i = 0;
-    const next = () => {
-      if (i >= steps.length) return;
-      this.flash(steps[i++]);
-      setTimeout(next, 2200);
-    };
-    setTimeout(next, 800);
-  },
-
-  // ── TICK ──────────────────────────────────────────────────────
-  tick(time, delta) {
-    const pos = this.rig.object3D.position;
-    const yaw = this.cam ? this.cam.object3D.rotation.y : 0;
-    const k   = this._k;
-    const spd = this.data.walkSpeed;
-    const str = this.data.strafeSpeed;
-
-    const gL = this.classify(this.lHand);
-    const gR = this.classify(this.rHand);
-    const wyL = this.wristY(this.lHand);
-    const wyR = this.wristY(this.rHand);
-
-    // ── PRIORITY: BOTH HANDS FLY / LAND ─────────────────────
-    const bothUp   = wyL > 1.9 && wyR > 1.9;
-    const bothDown = wyL < 0.9 && wyR < 0.9 && wyL > 0.01; // both hands below knee, above floor
-
-    if ((bothUp || k['Space']) && this.mode !== 'fly') {
-      this.mode    = 'fly';
-      this.targetY = this.data.flyY;
-      this.flash('🙌 FLY MODE — AERIAL RIG!');
-      this.lit('fly');
-      if (this.flyVfx)  this.flyVfx.classList.add('active');
-      if (this.spLines) this.spLines.classList.add('active');
-      // Auto-stop VFX after 3s
-      clearTimeout(this._vfxT);
-      this._vfxT = setTimeout(() => {
-        if (this.flyVfx)  this.flyVfx.classList.remove('active');
-        if (this.spLines) this.spLines.classList.remove('active');
-      }, 3000);
-
-    } else if ((bothDown || k['KeyQ']) && this.mode !== 'ground') {
-      this.mode    = 'ground';
-      this.targetY = this.data.groundY;
-      this.flash('👇 LANDING...');
-      this.lit('land');
-      if (this.flyVfx)  this.flyVfx.classList.remove('active');
-      if (this.spLines) this.spLines.classList.remove('active');
-    }
-
-    // ── LEFT HAND: Turn L + Bird's Eye ────────────────────────
-    // Pinch left → turn left 45°
-    if (gL === 'pinch' && this.coolL <= 0) {
-      this.rig.object3D.rotation.y += THREE.MathUtils.degToRad(this.data.turnDeg);
-      this.coolL = 380;
-      this.flash('◀ TURN LEFT');
-      this.lit('turnL');
-    }
-    // Open left palm (not flying) → bird's eye
-    if (gL === 'open' && wyL < 1.85 && this.mode === 'ground') {
-      this.mode    = 'bird';
-      this.targetY = this.data.birdY;
-      this.flash('🖐️ BIRD\'S EYE VIEW');
-      this.lit('bird');
-    }
-    // Fist left while in bird → come back down
-    if (gL === 'fist' && this.mode === 'bird') {
-      this.mode    = 'ground';
-      this.targetY = this.data.groundY;
-      this.flash('👊 RETURNING TO GROUND');
-    }
-
-    // ── RIGHT HAND: Walk + Strafe + Turn R ───────────────────
-    if (gR === 'pinch' && this.coolR <= 0) {
-      this.rig.object3D.rotation.y -= THREE.MathUtils.degToRad(this.data.turnDeg);
-      this.coolR = 380;
-      this.flash('▶ TURN RIGHT');
-      this.lit('turnR');
-    }
-
-    // Walk forward — right index point
-    if (gR === 'point' || k['KeyW'] || k['ArrowUp']) {
-      pos.x -= Math.sin(yaw) * spd;
-      pos.z -= Math.cos(yaw) * spd;
-      this.lit('forward');
-    }
-    // Walk back — right peace sign
-    else if (gR === 'peace' || k['KeyS'] || k['ArrowDown']) {
-      pos.x += Math.sin(yaw) * spd;
-      pos.z += Math.cos(yaw) * spd;
-      this.lit('back');
-    }
-    // Strafe right — hang loose
-    else if (gR === 'hangloos' || k['KeyD'] || k['ArrowRight']) {
-      pos.x += Math.cos(yaw) * str;
-      pos.z -= Math.sin(yaw) * str;
-    }
-    // Strafe left — thumbs up (right hand)
-    else if (gR === 'thumbsup' || k['KeyA'] || k['ArrowLeft']) {
-      pos.x -= Math.cos(yaw) * str;
-      pos.z += Math.sin(yaw) * str;
-    }
-    // Fist = stop feedback
-    else if (gR === 'fist' && gL === 'fist') {
-      this.flash('✊ STOPPED');
-      this.lit('stop');
-    }
-
-    // ── Smooth vertical interpolation ────────────────────────
-    const dy = this.targetY - pos.y;
-    if (Math.abs(dy) > 0.015) {
-      pos.y += dy * this.data.flySpeed;
-    } else {
-      pos.y = this.targetY;
-    }
-
-    // ── Cooldowns ─────────────────────────────────────────────
-    if (this.coolL > 0) this.coolL -= delta;
-    if (this.coolR > 0) this.coolR -= delta;
-  }
-});
-</script>
-
-<!-- ================================================================
-     ORIGINAL PINCH-TURN COMPONENTS (kept for Quest thumbstick/gamepad fallback)
-     ================================================================ -->
-<script>
-  // Minimal versions — pinch-turn__left & right kept for compatibility
-  AFRAME.registerComponent('pinch-turn__left', {
-    init() {
-      this.pinching = false;
-      this._onPinch = () => {
-        if (this.pinching) return; this.pinching = true;
-        const rig = document.getElementById('rig');
-        if (rig) rig.object3D.rotation.y += THREE.MathUtils.degToRad(45);
-        setTimeout(() => { this.pinching = false; }, 350);
-      };
-    },
-    play() {
-      const els = document.querySelectorAll('[hand-tracking-controls]');
-      for (const el of els) {
-        const c = el.components['hand-tracking-controls'];
-        if (c && c.data && c.data.hand === 'left') {
-          el.addEventListener('pinchstart', this._onPinch);
-          this._handEl = el; break;
-        }
-      }
-    },
-    pause() { if (this._handEl) this._handEl.removeEventListener('pinchstart', this._onPinch); }
-  });
-
-  AFRAME.registerComponent('pinch-turn__right', {
-    init() {
-      this.pinching = false;
-      this._onPinch = () => {
-        if (this.pinching) return; this.pinching = true;
-        const rig = document.getElementById('rig');
-        if (rig) rig.object3D.rotation.y -= THREE.MathUtils.degToRad(45);
-        setTimeout(() => { this.pinching = false; }, 350);
-      };
-    },
-    play() {
-      const els = document.querySelectorAll('[hand-tracking-controls]');
-      for (const el of els) {
-        const c = el.components['hand-tracking-controls'];
-        if (c && c.data && c.data.hand === 'right') {
-          el.addEventListener('pinchstart', this._onPinch);
-          this._handEl = el; break;
-        }
-      }
-    },
-    pause() { if (this._handEl) this._handEl.removeEventListener('pinchstart', this._onPinch); }
-  });
-</script>
-
+  </a-scene>
 </body>
 </html>
